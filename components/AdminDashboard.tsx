@@ -1,0 +1,1752 @@
+import React, { useState, useEffect } from 'react';
+import { supabase } from '../supabase';
+import { Candidato, ConfigItem, KPIStats, Pesquisa, Pergunta, TipoPergunta } from '../types';
+import { 
+  BarChart3, Users, ClipboardList, Sparkles, Briefcase, Settings,
+  Eye, Download, MapPin, X, Loader2, Plus, Trash2, TrendingUp, ShieldCheck, Calendar,
+  Link2, Copy, CheckCheck, ChevronLeft, ToggleLeft, ToggleRight, FileText, Hash, AlignLeft, ListChecks, Star,
+  Share2, ExternalLink, MessageCircle, Brain, Award, Zap, Check, AlertTriangle, ThumbsUp, ThumbsDown, RefreshCw
+} from 'lucide-react';
+import { analyzeSurveyResponses, analyzeTalentCompatibility, AIAnalysisResult, TalentAnalysisResult, DEFAULT_PROMPT_SURVEYS, DEFAULT_PROMPT_TALENTS } from '../aiService';
+
+const AdminDashboard: React.FC = () => {
+  const [activeTab, setActiveTab] = useState<'overview' | 'talents' | 'surveys' | 'ai' | 'jobs' | 'settings'>('overview');
+  
+  const [candidatos, setCandidatos] = useState<Candidato[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [filterCity, setFilterCity] = useState('');
+  const [filterCargo, setFilterCargo] = useState('');
+  
+  // Novos Filtros de Data Globais
+  const [startDate, setStartDate] = useState('');
+  const [endDate, setEndDate] = useState('');
+
+  const [selectedResume, setSelectedResume] = useState<Candidato | null>(null);
+
+  const [stats, setStats] = useState<KPIStats>({ total: 0, porCidade: {}, porCargo: {}, porDia: {} });
+  
+  // Dados extras para os novos gráficos
+  const [timelineData, setTimelineData] = useState<{date: string, count: number, fullDate: Date}[]>([]);
+  const [heatmapData, setHeatmapData] = useState<number[]>(new Array(24).fill(0));
+
+  const [cidades, setCidades] = useState<ConfigItem[]>([]);
+  const [cargos, setCargos] = useState<ConfigItem[]>([]);
+  const [newItem, setNewItem] = useState('');
+
+  // Estado do Módulo de Pesquisas
+  const [pesquisas, setPesquisas] = useState<Pesquisa[]>([]);
+  const [surveyView, setSurveyView] = useState<'list' | 'create' | 'results'>('list');
+  const [editPesquisa, setEditPesquisa] = useState<Pesquisa | null>(null);
+  const [selectedPesquisaResults, setSelectedPesquisaResults] = useState<Pesquisa | null>(null);
+  const [surveyResults, setSurveyResults] = useState<any[]>([]);
+  const [copiedLink, setCopiedLink] = useState(false);
+  const [surveyResponseCounts, setSurveyResponseCounts] = useState<Record<string, number>>({});
+  const [shareOpenId, setShareOpenId] = useState<string | null>(null);
+
+  // Estado do Construtor de Pesquisa
+  const [surveyTitle, setSurveyTitle] = useState('');
+  const [surveyDesc, setSurveyDesc] = useState('');
+  const [surveyPerguntas, setSurveyPerguntas] = useState<Pergunta[]>([]);
+  const [savingSurvey, setSavingSurvey] = useState(false);
+
+  // Estado da Análise com Inteligência Artificial
+  const [geminiKey, setGeminiKey] = useState(() => localStorage.getItem('gigante_gemini_key') || '');
+  const [geminiSaveStatus, setGeminiSaveStatus] = useState<'idle' | 'saved'>('idle');
+  const [aiProvider, setAiProvider] = useState<'ollama' | 'gemini'>('ollama');
+  const [ollamaModel, setOllamaModel] = useState<string>('llama3.2:3b');
+  const [selectedAiSurveyId, setSelectedAiSurveyId] = useState<string>('');
+  const [analyzingSurvey, setAnalyzingSurvey] = useState<boolean>(false);
+  const [surveyAnalysisResult, setSurveyAnalysisResult] = useState<AIAnalysisResult | null>(null);
+  const [selectedAiCargo, setSelectedAiCargo] = useState<string>('');
+  const [analyzingTalents, setAnalyzingTalents] = useState<boolean>(false);
+  const [matchingTalents, setMatchingTalents] = useState<Candidato[]>([]);
+  const [talentAnalysisResults, setTalentAnalysisResults] = useState<Record<string, TalentAnalysisResult>>({});
+  const [analyzingTalentId, setAnalyzingTalentId] = useState<string | null>(null);
+  const [aiSubTab, setAiSubTab] = useState<'surveys' | 'talents'>('surveys');
+
+  // Prompts customizados (Treinamento de Agentes de IA)
+  const [promptSurveys, setPromptSurveys] = useState(() => localStorage.getItem('gigante_prompt_surveys') || DEFAULT_PROMPT_SURVEYS);
+  const [promptTalents, setPromptTalents] = useState(() => localStorage.getItem('gigante_prompt_talents') || DEFAULT_PROMPT_TALENTS);
+  const [promptSaveStatus, setPromptSaveStatus] = useState<'idle' | 'saved'>('idle');
+
+
+  useEffect(() => {
+    fetchData();
+    fetchPesquisas();
+  }, [filterCity, filterCargo, startDate, endDate]);
+
+  const fetchData = async () => {
+    setLoading(true);
+    
+    // Consulta para a tabela (com filtros de Cidade e Cargo)
+    let qRes = supabase.from('candidatos').select('*').order('created_at', { ascending: false });
+    if (filterCity) qRes = qRes.eq('cidade', filterCity);
+    if (filterCargo) qRes = qRes.eq('vaga_interesse', filterCargo);
+    if (startDate) qRes = qRes.gte('created_at', `${startDate}T00:00:00Z`);
+    if (endDate) qRes = qRes.lte('created_at', `${endDate}T23:59:59Z`);
+    
+    const { data: cData } = await qRes;
+    if (cData) setCandidatos(cData);
+
+    try {
+      const { data: cityData } = await supabase.from('cidades').select('*').order('nome');
+      const { data: jobData } = await supabase.from('cargos').select('*').order('nome');
+      if (cityData) setCidades(cityData);
+      if (jobData) setCargos(jobData);
+    } catch(e) {}
+
+    // Consulta para KPIs (Global, apenas afeta as datas)
+    let qAll = supabase.from('candidatos').select('cidade, vaga_interesse, created_at');
+    if (startDate) qAll = qAll.gte('created_at', `${startDate}T00:00:00Z`);
+    if (endDate) qAll = qAll.lte('created_at', `${endDate}T23:59:59Z`);
+
+    const { data: allData } = await qAll;
+    if (allData) {
+      const s: KPIStats = { total: allData.length, porCidade: {}, porCargo: {}, porDia: {} };
+      
+      const tMap: Record<string, {count: number, dateObj: Date}> = {};
+      const hMap = new Array(24).fill(0);
+
+      allData.forEach(cand => {
+        // Estatisticas básicas
+        s.porCidade[cand.cidade] = (s.porCidade[cand.cidade] || 0) + 1;
+        s.porCargo[cand.vaga_interesse] = (s.porCargo[cand.vaga_interesse] || 0) + 1;
+        
+        // Linha do tempo (Timeline)
+        const d = new Date(cand.created_at);
+        const diaStr = d.toLocaleDateString('pt-BR');
+        s.porDia[diaStr] = (s.porDia[diaStr] || 0) + 1;
+
+        const key = `${d.getDate().toString().padStart(2,'0')}/${(d.getMonth()+1).toString().padStart(2,'0')}`;
+        if (!tMap[key]) tMap[key] = { count: 0, dateObj: new Date(d.setHours(0,0,0,0)) };
+        tMap[key].count++;
+
+        // Heatmap (Horas)
+        const hour = d.getHours();
+        hMap[hour]++;
+      });
+      setStats(s);
+
+      // Ordenar Timeline chronologicamente
+      const sortedTimeline = Object.keys(tMap).map(k => ({
+        date: k,
+        count: tMap[k].count,
+        fullDate: tMap[k].dateObj
+      })).sort((a, b) => a.fullDate.getTime() - b.fullDate.getTime());
+      
+      setTimelineData(sortedTimeline);
+      setHeatmapData(hMap);
+    }
+    setLoading(false);
+  };
+
+  const handleAddItem = async (table: 'cidades' | 'cargos') => {
+    if (!newItem) return;
+    const { error } = await supabase.from(table).insert([{ nome: newItem }]);
+    if (!error) {
+      setNewItem('');
+      fetchData();
+    }
+  };
+
+  const handleDeleteItem = async (table: 'cidades' | 'cargos', id: string) => {
+    const { error } = await supabase.from(table).delete().eq('id', id);
+    if (!error) fetchData();
+  };
+
+  // === FUNÇÕES DO MÓDULO DE PESQUISAS ===
+  const fetchPesquisas = async () => {
+    const { data } = await supabase.from('pesquisas').select('*').order('created_at', { ascending: false });
+    if (data) {
+      setPesquisas(data);
+      // Buscar contagem de respostas para cada pesquisa
+      const counts: Record<string, number> = {};
+      for (const p of data) {
+        const { count } = await supabase.from('respostas').select('*', { count: 'exact', head: true }).eq('pesquisa_id', p.id);
+        counts[p.id] = count || 0;
+      }
+      setSurveyResponseCounts(counts);
+    }
+  };
+
+  const fetchSurveyResults = async (pesquisaId: string) => {
+    const { data } = await supabase.from('respostas').select('*').eq('pesquisa_id', pesquisaId).order('created_at', { ascending: false });
+    setSurveyResults(data || []);
+  };
+
+  const resetSurveyForm = () => {
+    setSurveyTitle('');
+    setSurveyDesc('');
+    setSurveyPerguntas([]);
+    setEditPesquisa(null);
+  };
+
+  const addPergunta = (tipo: TipoPergunta) => {
+    const nova: Pergunta = {
+      id: crypto.randomUUID(),
+      tipo,
+      enunciado: '',
+      obrigatoria: true,
+      ...(tipo === 'multipla_escolha' ? { opcoes: ['', ''] } : {})
+    };
+    setSurveyPerguntas(prev => [...prev, nova]);
+  };
+
+  const removePergunta = (id: string) => {
+    setSurveyPerguntas(prev => prev.filter(p => p.id !== id));
+  };
+
+  const updatePergunta = (id: string, field: string, value: any) => {
+    setSurveyPerguntas(prev => prev.map(p => {
+      if (p.id !== id) return p;
+      const updated = { ...p, [field]: value };
+      // Se mudou para multipla_escolha e nao tem opcoes, inicia com 2
+      if (field === 'tipo' && value === 'multipla_escolha' && !updated.opcoes) {
+        updated.opcoes = ['', ''];
+      }
+      return updated;
+    }));
+  };
+
+  const addOpcao = (pergId: string) => {
+    setSurveyPerguntas(prev => prev.map(p => p.id === pergId ? { ...p, opcoes: [...(p.opcoes || []), ''] } : p));
+  };
+
+  const removeOpcao = (pergId: string, oIdx: number) => {
+    setSurveyPerguntas(prev => prev.map(p => p.id === pergId ? { ...p, opcoes: (p.opcoes || []).filter((_, i) => i !== oIdx) } : p));
+  };
+
+  const updateOpcao = (pergId: string, oIdx: number, value: string) => {
+    setSurveyPerguntas(prev => prev.map(p => {
+      if (p.id !== pergId) return p;
+      const newOpcoes = [...(p.opcoes || [])];
+      newOpcoes[oIdx] = value;
+      return { ...p, opcoes: newOpcoes };
+    }));
+  };
+
+  const handleSaveSurvey = async () => {
+    if (!surveyTitle || surveyPerguntas.length === 0) return;
+    setSavingSurvey(true);
+    // Gerar slug a partir do título
+    const slug = surveyTitle
+      .toLowerCase()
+      .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^a-z0-9\s-]/g, '')
+      .replace(/\s+/g, '-')
+      .replace(/-+/g, '-')
+      .trim();
+    try {
+      const { error } = await supabase.from('pesquisas').insert([{
+        titulo: surveyTitle,
+        descricao: surveyDesc,
+        perguntas: surveyPerguntas,
+        slug: slug,
+        is_active: true
+      }]);
+      if (!error) {
+        await fetchPesquisas();
+        setSurveyView('list');
+        resetSurveyForm();
+      }
+    } catch(e) {} finally {
+      setSavingSurvey(false);
+    }
+  };
+
+  const togglePesquisaActive = async (p: Pesquisa) => {
+    await supabase.from('pesquisas').update({ is_active: !p.is_active }).eq('id', p.id);
+    fetchPesquisas();
+  };
+
+  const getSurveyUrl = (pesquisaId: string) => {
+    const pesquisa = pesquisas.find(p => p.id === pesquisaId);
+    const identifier = pesquisa?.slug || pesquisaId;
+    return `${window.location.origin}${window.location.pathname}#/pesquisa/${identifier}`;
+  };
+
+  const copyLink = (pesquisaId: string) => {
+    navigator.clipboard.writeText(getSurveyUrl(pesquisaId));
+    setCopiedLink(true);
+    setTimeout(() => setCopiedLink(false), 2000);
+  };
+
+  const shareWhatsApp = (pesquisaId: string) => {
+    const pesquisa = pesquisas.find(p => p.id === pesquisaId);
+    const text = `📋 *${pesquisa?.titulo || 'Pesquisa'}*\n\nParticipe da nossa pesquisa interna! Sua opinião é muito importante.\n\n👉 ${getSurveyUrl(pesquisaId)}`;
+    window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, '_blank');
+  };
+
+  const shareFacebook = (pesquisaId: string) => {
+    window.open(`https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent(getSurveyUrl(pesquisaId))}`, '_blank');
+  };
+
+  const shareInstagram = (pesquisaId: string) => {
+    // Instagram não suporta share via URL, copia o link para o usuário colar nos stories/bio
+    navigator.clipboard.writeText(getSurveyUrl(pesquisaId));
+    setCopiedLink(true);
+    setTimeout(() => setCopiedLink(false), 2000);
+  };
+
+  const shareTelegram = (pesquisaId: string) => {
+    const pesquisa = pesquisas.find(p => p.id === pesquisaId);
+    const text = `${pesquisa?.titulo || 'Pesquisa'} - Participe!`;
+    window.open(`https://t.me/share/url?url=${encodeURIComponent(getSurveyUrl(pesquisaId))}&text=${encodeURIComponent(text)}`, '_blank');
+  };
+
+  const shareEmail = (pesquisaId: string) => {
+    const pesquisa = pesquisas.find(p => p.id === pesquisaId);
+    const subject = pesquisa?.titulo || 'Pesquisa Interna';
+    const body = `Olá!\n\nParticipe da nossa pesquisa: ${pesquisa?.titulo}\n\nAcesse: ${getSurveyUrl(pesquisaId)}\n\nObrigado!`;
+    window.open(`mailto:?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`);
+  };
+
+  const handleAnalyzeSurvey = async () => {
+    if (!selectedAiSurveyId) return;
+    setAnalyzingSurvey(true);
+    setSurveyAnalysisResult(null);
+
+    const survey = pesquisas.find(p => p.id === selectedAiSurveyId);
+    if (!survey) {
+      setAnalyzingSurvey(false);
+      return;
+    }
+
+    try {
+      const { data: resData, error: resError } = await supabase
+        .from('respostas')
+        .select('*')
+        .eq('pesquisa_id', selectedAiSurveyId);
+
+      if (resError || !resData || resData.length === 0) {
+        alert("Esta pesquisa ainda não possui respostas para analisar!");
+        setAnalyzingSurvey(false);
+        return;
+      }
+
+      const analysis = await analyzeSurveyResponses(
+        survey.titulo,
+        survey.descricao || '',
+        survey.perguntas,
+        resData,
+        aiProvider,
+        geminiKey,
+        ollamaModel,
+        promptSurveys
+      );
+
+      setSurveyAnalysisResult(analysis);
+    } catch (err: any) {
+      console.error(err);
+      alert(`Falha ao realizar a análise com IA: ${err.message || 'Erro desconhecido. Verifique as configurações de chaves/VPS.'}`);
+    } finally {
+      setAnalyzingSurvey(false);
+    }
+  };
+
+  const handleAnalyzeTalent = async (candidate: Candidato) => {
+    setAnalyzingTalentId(candidate.id);
+    try {
+      const analysis = await analyzeTalentCompatibility(
+        candidate,
+        selectedAiCargo || candidate.vaga_interesse,
+        aiProvider,
+        geminiKey,
+        ollamaModel,
+        promptTalents
+      );
+      setTalentAnalysisResults(prev => ({
+        ...prev,
+        [candidate.id]: analysis
+      }));
+    } catch (err: any) {
+      console.error(err);
+      alert(`Falha ao analisar candidato com IA: ${err.message || 'Erro desconhecido.'}`);
+    } finally {
+      setAnalyzingTalentId(null);
+    }
+  };
+
+  const handleSelectAiCargo = (cargo: string) => {
+    setSelectedAiCargo(cargo);
+    if (cargo) {
+      const filtered = candidatos.filter(c => c.vaga_interesse === cargo);
+      setMatchingTalents(filtered);
+    } else {
+      setMatchingTalents([]);
+    }
+  };
+
+  const handleSaveGeminiKey = (key: string) => {
+    setGeminiKey(key);
+    localStorage.setItem('gigante_gemini_key', key);
+    setGeminiSaveStatus('saved');
+    setTimeout(() => setGeminiSaveStatus('idle'), 2500);
+  };
+
+  const handleSavePrompts = () => {
+    localStorage.setItem('gigante_prompt_surveys', promptSurveys);
+    localStorage.setItem('gigante_prompt_talents', promptTalents);
+    setPromptSaveStatus('saved');
+    setTimeout(() => setPromptSaveStatus('idle'), 2500);
+  };
+
+  const handleResetPrompts = () => {
+    if (window.confirm("Deseja realmente restaurar os prompts padrões do sistema?")) {
+      setPromptSurveys(DEFAULT_PROMPT_SURVEYS);
+      setPromptTalents(DEFAULT_PROMPT_TALENTS);
+      localStorage.setItem('gigante_prompt_surveys', DEFAULT_PROMPT_SURVEYS);
+      localStorage.setItem('gigante_prompt_talents', DEFAULT_PROMPT_TALENTS);
+      setPromptSaveStatus('saved');
+      setTimeout(() => setPromptSaveStatus('idle'), 2500);
+    }
+  };
+
+  const SidebarItem = ({ id, label, icon }: { id: typeof activeTab, label: string, icon: React.ReactNode }) => {
+    const isActive = activeTab === id;
+    return (
+      <button
+        onClick={() => setActiveTab(id)}
+        className={`w-full flex items-center gap-3 px-6 py-4 transition-all text-sm font-bold tracking-wide uppercase border-l-4 ${
+          isActive 
+            ? 'bg-teal-50 dark:bg-teal-900/20 text-teal-700 dark:text-teal-400 border-teal-600' 
+            : 'text-gray-500 hover:bg-gray-50 dark:hover:bg-gray-800/50 border-transparent hover:border-gray-300 dark:hover:border-gray-700'
+        }`}
+      >
+        {icon}
+        {label}
+      </button>
+    );
+  };
+
+  return (
+    <div className="flex flex-col md:flex-row min-h-[calc(100vh-145px)] bg-gray-50 dark:bg-gray-950">
+      
+      {/* Sidebar */}
+      <aside className="w-full md:w-72 bg-white dark:bg-gray-900 border-r border-gray-200 dark:border-gray-800 shadow-sm flex flex-col z-10">
+        <div className="p-6 border-b border-gray-100 dark:border-gray-800">
+          <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest flex items-center gap-2 mb-1">
+            <ShieldCheck className="h-3 w-3 text-teal-600" /> Gigante Produtos Médicos
+          </p>
+          <h2 className="text-xl font-black text-gray-900 dark:text-white uppercase tracking-tighter leading-none">
+            RH <span className="text-teal-600">WORKSPACE</span>
+          </h2>
+        </div>
+        
+        <nav className="flex-1 py-4 space-y-1">
+          <SidebarItem id="overview" label="Visão Geral" icon={<BarChart3 className="h-5 w-5" />} />
+          <SidebarItem id="talents" label="Banco de Talentos" icon={<Users className="h-5 w-5" />} />
+          <SidebarItem id="surveys" label="Pesquisas Internas" icon={<ClipboardList className="h-5 w-5" />} />
+          <SidebarItem id="ai" label="Análise de IA" icon={<Sparkles className="h-5 w-5" />} />
+          <SidebarItem id="jobs" label="Mural de Vagas" icon={<Briefcase className="h-5 w-5" />} />
+        </nav>
+
+        <div className="border-t border-gray-100 dark:border-gray-800 py-4">
+          <SidebarItem id="settings" label="Configurações" icon={<Settings className="h-5 w-5" />} />
+        </div>
+      </aside>
+
+      {/* Main Content Area */}
+      <main className="flex-1 p-6 md:p-10 overflow-y-auto">
+        <div className="max-w-7xl mx-auto">
+          
+          {/* Aba: VISÃO GERAL */}
+          {activeTab === 'overview' && (
+            <div className="space-y-8 animate-in fade-in duration-500">
+              
+              {/* Barra de Filtros de Data */}
+              <div className="flex flex-col md:flex-row items-center justify-between gap-4 bg-white dark:bg-gray-900 p-6 rounded-[2rem] border border-gray-100 dark:border-gray-800 shadow-lg">
+                <div className="flex items-center gap-3">
+                   <Calendar className="h-6 w-6 text-teal-600" />
+                   <h3 className="font-black text-gray-900 dark:text-white uppercase tracking-tight">Filtro de Período</h3>
+                </div>
+                <div className="flex items-center gap-3">
+                  <input 
+                    type="date" 
+                    value={startDate}
+                    onChange={(e) => setStartDate(e.target.value)}
+                    className="px-4 py-2 bg-gray-50 dark:bg-gray-800 rounded-xl border-none text-sm font-bold text-gray-600 dark:text-gray-300 outline-none focus:ring-2 focus:ring-teal-600"
+                  />
+                  <span className="text-gray-400 font-bold uppercase text-[10px]">até</span>
+                  <input 
+                    type="date" 
+                    value={endDate}
+                    onChange={(e) => setEndDate(e.target.value)}
+                    className="px-4 py-2 bg-gray-50 dark:bg-gray-800 rounded-xl border-none text-sm font-bold text-gray-600 dark:text-gray-300 outline-none focus:ring-2 focus:ring-teal-600"
+                  />
+                  {(startDate || endDate) && (
+                    <button onClick={() => {setStartDate(''); setEndDate('');}} className="ml-2 text-[10px] bg-red-100 text-red-600 px-3 py-2 rounded-xl uppercase font-black hover:bg-red-200">
+                      Limpar
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* KPIs */}
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+                <KPICard title="Total de Talentos" value={stats.total} icon={<Users className="text-teal-600 h-6 w-6" />} color="teal" />
+                <KPICard title="Dias de Captação" value={Object.keys(stats.porDia).length} icon={<TrendingUp className="text-teal-600 h-6 w-6" />} color="teal" />
+                {/* Outros 2 slots vazios ou de estatisticas futuras */}
+              </div>
+
+              {/* Novos Gráficos: Linha e Heatmap */}
+              <div className="grid grid-cols-1 xl:grid-cols-3 gap-8">
+                <div className="xl:col-span-2">
+                  <SVGLineChart data={timelineData} />
+                </div>
+                <div className="xl:col-span-1">
+                  <HeatmapChart data={heatmapData} total={stats.total} />
+                </div>
+              </div>
+
+              {/* Distribuição (Barras menores) */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                <ChartCard title="Distribuição por Cidade" data={stats.porCidade} total={stats.total} />
+                <ChartCard title="Distribuição por Vaga" data={stats.porCargo} total={stats.total} />
+              </div>
+            </div>
+          )}
+
+          {/* Aba: BANCO DE TALENTOS */}
+          {activeTab === 'talents' && (
+            <div className="space-y-6 animate-in slide-in-from-bottom-4 duration-500">
+              
+              {/* Barra de Filtros */}
+              <div className="flex flex-col md:flex-row items-center justify-between gap-4 bg-white dark:bg-gray-900 p-6 rounded-[2rem] border border-gray-100 dark:border-gray-800 shadow-lg">
+                <div className="flex items-center gap-4 flex-wrap">
+                  <div className="flex items-center gap-3 mr-4">
+                     <Calendar className="h-6 w-6 text-teal-600" />
+                     <h3 className="font-black text-gray-900 dark:text-white uppercase tracking-tight">Filtros</h3>
+                  </div>
+                  <select 
+                    className="px-4 py-2 bg-gray-50 dark:bg-gray-800 border-none rounded-xl text-xs font-black uppercase outline-none"
+                    value={filterCity} onChange={e => setFilterCity(e.target.value)}
+                  >
+                    <option value="">Todas as Cidades</option>
+                    {cidades.map(c => <option key={c.id} value={c.nome}>{c.nome}</option>)}
+                  </select>
+                  <select 
+                    className="px-4 py-2 bg-gray-50 dark:bg-gray-800 border-none rounded-xl text-xs font-black uppercase outline-none"
+                    value={filterCargo} onChange={e => setFilterCargo(e.target.value)}
+                  >
+                    <option value="">Todas as Vagas</option>
+                    {cargos.map(c => <option key={c.id} value={c.nome}>{c.nome}</option>)}
+                  </select>
+                </div>
+                
+                <div className="flex items-center gap-3">
+                  <input 
+                    type="date" 
+                    value={startDate}
+                    onChange={(e) => setStartDate(e.target.value)}
+                    className="px-4 py-2 bg-gray-50 dark:bg-gray-800 rounded-xl border-none text-sm font-bold text-gray-600 dark:text-gray-300 outline-none focus:ring-2 focus:ring-teal-600"
+                  />
+                  <span className="text-gray-400 font-bold uppercase text-[10px]">até</span>
+                  <input 
+                    type="date" 
+                    value={endDate}
+                    onChange={(e) => setEndDate(e.target.value)}
+                    className="px-4 py-2 bg-gray-50 dark:bg-gray-800 rounded-xl border-none text-sm font-bold text-gray-600 dark:text-gray-300 outline-none focus:ring-2 focus:ring-teal-600"
+                  />
+                  {(startDate || endDate || filterCity || filterCargo) && (
+                    <button onClick={() => {setStartDate(''); setEndDate(''); setFilterCity(''); setFilterCargo('');}} className="ml-2 text-[10px] bg-red-100 text-red-600 px-3 py-2 rounded-xl uppercase font-black hover:bg-red-200">
+                      Limpar
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              <div className="bg-white dark:bg-gray-900 rounded-[2.5rem] shadow-xl border border-gray-100 dark:border-gray-800 overflow-hidden">
+                <table className="w-full text-left">
+                  <thead className="bg-gray-50/50 dark:bg-gray-800/50 border-b dark:border-gray-700">
+                    <tr>
+                      <th className="px-8 py-5 text-[10px] font-black text-gray-400 dark:text-gray-500 uppercase tracking-widest">Candidato</th>
+                      <th className="px-8 py-5 text-[10px] font-black text-gray-400 dark:text-gray-500 uppercase tracking-widest">Contato</th>
+                      <th className="px-8 py-5 text-[10px] font-black text-gray-400 dark:text-gray-500 uppercase tracking-widest">Cidade</th>
+                      <th className="px-8 py-5 text-[10px] font-black text-gray-400 dark:text-gray-500 uppercase tracking-widest">Cadastro</th>
+                      <th className="px-8 py-5 text-[10px] font-black text-gray-400 dark:text-gray-500 uppercase tracking-widest text-right">Ação</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-50 dark:divide-gray-800">
+                    {loading ? (
+                      <tr><td colSpan={5} className="py-20 text-center"><Loader2 className="h-8 w-8 animate-spin text-teal-600 mx-auto" /></td></tr>
+                    ) : candidatos.map(item => (
+                      <tr key={item.id} className="hover:bg-teal-50/50 dark:hover:bg-teal-900/10 transition-colors group">
+                        <td className="px-8 py-5">
+                          <div className="font-black text-gray-900 dark:text-white uppercase">{item.nome}</div>
+                          <div className="text-[10px] text-gray-400 font-bold uppercase">{item.vaga_interesse}</div>
+                        </td>
+                        <td className="px-8 py-5 text-xs font-medium text-gray-600 dark:text-gray-300">
+                          <div>{item.email}</div>
+                          <div className="text-[10px] text-gray-400">{item.telefone}</div>
+                        </td>
+                        <td className="px-8 py-5 text-xs font-bold text-gray-500 dark:text-gray-400 uppercase">{item.cidade}</td>
+                        <td className="px-8 py-5 text-[11px] font-bold text-gray-400 uppercase">{new Date(item.created_at).toLocaleDateString('pt-BR')}</td>
+                        <td className="px-8 py-5 text-right">
+                          <button onClick={() => setSelectedResume(item)} className="bg-teal-600 text-white p-2.5 rounded-xl hover:bg-teal-700 transition-all shadow-md active:scale-90">
+                            <Eye className="h-4 w-4" />
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {/* Aba: PESQUISAS INTERNAS */}
+          {activeTab === 'surveys' && (
+            <div className="space-y-6 animate-in fade-in duration-500">
+              
+              {/* Vista: Lista de Pesquisas */}
+              {surveyView === 'list' && (
+                <div className="space-y-6">
+                  <div className="flex items-center justify-between">
+                    <h2 className="text-2xl font-black text-gray-900 dark:text-white uppercase tracking-tighter">Pesquisas Internas</h2>
+                    <button
+                      onClick={() => { resetSurveyForm(); setSurveyView('create'); }}
+                      className="bg-teal-600 text-white px-6 py-3 rounded-2xl font-black uppercase text-sm flex items-center gap-2 hover:bg-teal-700 transition-all shadow-lg active:scale-95"
+                    >
+                      <Plus className="h-5 w-5" /> Nova Pesquisa
+                    </button>
+                  </div>
+
+                  {pesquisas.length === 0 ? (
+                    <div className="flex flex-col items-center justify-center py-24 text-center">
+                      <div className="bg-teal-50 dark:bg-teal-900/20 p-6 rounded-full mb-6">
+                        <ClipboardList className="h-16 w-16 text-teal-600" />
+                      </div>
+                      <h3 className="text-xl font-black text-gray-900 dark:text-white uppercase tracking-tighter mb-3">Nenhuma pesquisa criada</h3>
+                      <p className="text-gray-500 max-w-md font-medium">Crie sua primeira pesquisa de clima, NPS ou feedback para começar a ouvir seus colaboradores.</p>
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                      {pesquisas.map(p => {
+                        const resCount = surveyResponseCounts[p.id] || 0;
+                        const diasAtiva = Math.max(1, Math.ceil((Date.now() - new Date(p.created_at).getTime()) / (1000 * 60 * 60 * 24)));
+                        return (
+                        <div key={p.id} className="bg-white dark:bg-gray-900 rounded-[2.5rem] p-8 border border-gray-100 dark:border-gray-800 shadow-xl hover:shadow-2xl transition-all group">
+                          <div className="flex items-start justify-between mb-4">
+                            <div>
+                              <h3 className="text-lg font-black text-gray-900 dark:text-white uppercase tracking-tight">{p.titulo}</h3>
+                              <p className="text-xs text-gray-400 font-bold uppercase mt-1">{new Date(p.created_at).toLocaleDateString('pt-BR')} • {p.perguntas.length} perguntas</p>
+                            </div>
+                            <span className={`px-3 py-1 rounded-full text-[10px] font-black uppercase ${p.is_active ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400' : 'bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-500'}`}>
+                              {p.is_active ? 'Ativa' : 'Encerrada'}
+                            </span>
+                          </div>
+                          {p.descricao && <p className="text-sm text-gray-500 mb-4 line-clamp-2">{p.descricao}</p>}
+                          
+                          {/* Mini Stats Preview */}
+                          <div className="grid grid-cols-3 gap-3 mb-6 p-4 bg-gray-50 dark:bg-gray-800/50 rounded-2xl">
+                            <div className="text-center">
+                              <div className="text-2xl font-black text-teal-600">{resCount}</div>
+                              <div className="text-[9px] font-black text-gray-400 uppercase tracking-widest">Respostas</div>
+                            </div>
+                            <div className="text-center border-x border-gray-200 dark:border-gray-700">
+                              <div className="text-2xl font-black text-gray-900 dark:text-white">{diasAtiva}</div>
+                              <div className="text-[9px] font-black text-gray-400 uppercase tracking-widest">{diasAtiva === 1 ? 'Dia' : 'Dias'}</div>
+                            </div>
+                            <div className="text-center">
+                              <div className="text-2xl font-black text-gray-900 dark:text-white">{(resCount / diasAtiva).toFixed(1)}</div>
+                              <div className="text-[9px] font-black text-gray-400 uppercase tracking-widest">Resp/Dia</div>
+                            </div>
+                          </div>
+                          {/* Link visível + Compartilhamento */}
+                          <div className="mb-6 space-y-3">
+                            <div className="flex items-center gap-2 p-3 bg-gray-50 dark:bg-gray-800 rounded-2xl">
+                              <Link2 className="h-4 w-4 text-gray-400 flex-shrink-0" />
+                              <span className="text-[11px] font-bold text-gray-500 dark:text-gray-400 truncate flex-grow">{getSurveyUrl(p.id)}</span>
+                              <button onClick={() => copyLink(p.id)} className="flex-shrink-0 p-2 rounded-xl bg-white dark:bg-gray-700 hover:bg-teal-50 dark:hover:bg-teal-900/30 text-gray-400 hover:text-teal-600 transition-all" title="Copiar link">
+                                {copiedLink ? <CheckCheck className="h-4 w-4 text-teal-600" /> : <Copy className="h-4 w-4" />}
+                              </button>
+                              <button onClick={() => setShareOpenId(shareOpenId === p.id ? null : p.id)} className="flex-shrink-0 p-2 rounded-xl bg-white dark:bg-gray-700 hover:bg-teal-50 dark:hover:bg-teal-900/30 text-gray-400 hover:text-teal-600 transition-all" title="Compartilhar">
+                                <Share2 className="h-4 w-4" />
+                              </button>
+                            </div>
+                            
+                            {shareOpenId === p.id && (
+                              <div className="flex items-center gap-2 p-3 bg-white dark:bg-gray-800 rounded-2xl border border-gray-100 dark:border-gray-700 animate-in slide-in-from-top-2 duration-300">
+                                <span className="text-[9px] font-black text-gray-400 uppercase tracking-widest mr-2">Compartilhar:</span>
+                                <button onClick={() => shareWhatsApp(p.id)} title="WhatsApp" className="p-2.5 rounded-xl hover:bg-green-50 dark:hover:bg-green-900/20 transition-all group">
+                                  <svg className="h-5 w-5 text-gray-400 group-hover:text-green-600 transition-colors" viewBox="0 0 24 24" fill="currentColor"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg>
+                                </button>
+                                <button onClick={() => shareFacebook(p.id)} title="Facebook" className="p-2.5 rounded-xl hover:bg-blue-50 dark:hover:bg-blue-900/20 transition-all group">
+                                  <svg className="h-5 w-5 text-gray-400 group-hover:text-blue-600 transition-colors" viewBox="0 0 24 24" fill="currentColor"><path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z"/></svg>
+                                </button>
+                                <button onClick={() => shareInstagram(p.id)} title="Instagram (Copiar link)" className="p-2.5 rounded-xl hover:bg-pink-50 dark:hover:bg-pink-900/20 transition-all group">
+                                  <svg className="h-5 w-5 text-gray-400 group-hover:text-pink-600 transition-colors" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2.163c3.204 0 3.584.012 4.85.07 3.252.148 4.771 1.691 4.919 4.919.058 1.265.069 1.645.069 4.849 0 3.205-.012 3.584-.069 4.849-.149 3.225-1.664 4.771-4.919 4.919-1.266.058-1.644.07-4.85.07-3.204 0-3.584-.012-4.849-.07-3.26-.149-4.771-1.699-4.919-4.92-.058-1.265-.07-1.644-.07-4.849 0-3.204.013-3.583.07-4.849.149-3.227 1.664-4.771 4.919-4.919 1.266-.057 1.645-.069 4.849-.069zM12 0C8.741 0 8.333.014 7.053.072 2.695.272.273 2.69.073 7.052.014 8.333 0 8.741 0 12c0 3.259.014 3.668.072 4.948.2 4.358 2.618 6.78 6.98 6.98C8.333 23.986 8.741 24 12 24c3.259 0 3.668-.014 4.948-.072 4.354-.2 6.782-2.618 6.979-6.98.059-1.28.073-1.689.073-4.948 0-3.259-.014-3.667-.072-4.947-.196-4.354-2.617-6.78-6.979-6.98C15.668.014 15.259 0 12 0zm0 5.838a6.162 6.162 0 100 12.324 6.162 6.162 0 000-12.324zM12 16a4 4 0 110-8 4 4 0 010 8zm6.406-11.845a1.44 1.44 0 100 2.881 1.44 1.44 0 000-2.881z"/></svg>
+                                </button>
+                                <button onClick={() => shareTelegram(p.id)} title="Telegram" className="p-2.5 rounded-xl hover:bg-sky-50 dark:hover:bg-sky-900/20 transition-all group">
+                                  <svg className="h-5 w-5 text-gray-400 group-hover:text-sky-500 transition-colors" viewBox="0 0 24 24" fill="currentColor"><path d="M11.944 0A12 12 0 0 0 0 12a12 12 0 0 0 12 12 12 12 0 0 0 12-12A12 12 0 0 0 12 0a12 12 0 0 0-.056 0zm4.962 7.224c.1-.002.321.023.465.14a.506.506 0 0 1 .171.325c.016.093.036.306.02.472-.18 1.898-.962 6.502-1.36 8.627-.168.9-.499 1.201-.82 1.23-.696.065-1.225-.46-1.9-.902-1.056-.693-1.653-1.124-2.678-1.8-1.185-.78-.417-1.21.258-1.91.177-.184 3.247-2.977 3.307-3.23.007-.032.014-.15-.056-.212s-.174-.041-.249-.024c-.106.024-1.793 1.14-5.061 3.345-.48.33-.913.49-1.302.48-.428-.008-1.252-.241-1.865-.44-.752-.245-1.349-.374-1.297-.789.027-.216.325-.437.893-.663 3.498-1.524 5.83-2.529 6.998-3.014 3.332-1.386 4.025-1.627 4.476-1.635z"/></svg>
+                                </button>
+                                <button onClick={() => shareEmail(p.id)} title="E-mail" className="p-2.5 rounded-xl hover:bg-amber-50 dark:hover:bg-amber-900/20 transition-all group">
+                                  <svg className="h-5 w-5 text-gray-400 group-hover:text-amber-600 transition-colors" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect width="20" height="16" x="2" y="4" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/></svg>
+                                </button>
+                              </div>
+                            )}
+                          </div>
+
+                          <div className="flex items-center gap-3 flex-wrap">
+                            <button
+                              onClick={() => { setSelectedPesquisaResults(p); fetchSurveyResults(p.id); setSurveyView('results'); }}
+                              className="flex-1 bg-gray-50 dark:bg-gray-800 text-gray-700 dark:text-gray-300 py-3 rounded-2xl font-black uppercase text-[11px] hover:bg-teal-50 hover:text-teal-700 dark:hover:bg-teal-900/20 dark:hover:text-teal-400 transition-all flex items-center justify-center gap-2"
+                            >
+                              <BarChart3 className="h-4 w-4" /> Resultados
+                            </button>
+                            <button
+                              onClick={() => togglePesquisaActive(p)}
+                              className={`px-4 py-3 rounded-2xl font-black uppercase text-[11px] transition-all flex items-center justify-center gap-2 ${p.is_active ? 'bg-red-50 text-red-600 hover:bg-red-100 dark:bg-red-900/20 dark:hover:bg-red-900/30' : 'bg-green-50 text-green-600 hover:bg-green-100 dark:bg-green-900/20 dark:hover:bg-green-900/30'}`}
+                            >
+                              {p.is_active ? <ToggleRight className="h-4 w-4" /> : <ToggleLeft className="h-4 w-4" />}
+                              {p.is_active ? 'Encerrar' : 'Reativar'}
+                            </button>
+                          </div>
+                        </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Vista: Construtor de Pesquisa */}
+              {surveyView === 'create' && (
+                <div className="space-y-8">
+                  <div className="flex items-center gap-4">
+                    <button onClick={() => setSurveyView('list')} className="p-3 rounded-2xl bg-gray-100 dark:bg-gray-800 hover:bg-teal-100 dark:hover:bg-teal-900/30 text-gray-500 hover:text-teal-600 transition-all">
+                      <ChevronLeft className="h-5 w-5" />
+                    </button>
+                    <h2 className="text-2xl font-black text-gray-900 dark:text-white uppercase tracking-tighter">Nova Pesquisa</h2>
+                  </div>
+
+                  <div className="bg-white dark:bg-gray-900 rounded-[3rem] p-8 md:p-10 border border-gray-100 dark:border-gray-800 shadow-xl space-y-8">
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                      <div className="space-y-2">
+                        <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest">Título da Pesquisa *</label>
+                        <input type="text" value={surveyTitle} onChange={e => setSurveyTitle(e.target.value)} placeholder="Ex: Pesquisa de Clima - Maio/2026" className="w-full px-5 py-4 rounded-2xl border border-gray-200 dark:border-gray-800 dark:bg-gray-800 focus:ring-4 focus:ring-teal-600/10 focus:border-teal-600 outline-none font-bold" />
+                      </div>
+                      <div className="space-y-2">
+                        <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest">Descrição (Opcional)</label>
+                        <input type="text" value={surveyDesc} onChange={e => setSurveyDesc(e.target.value)} placeholder="Breve descrição para os participantes" className="w-full px-5 py-4 rounded-2xl border border-gray-200 dark:border-gray-800 dark:bg-gray-800 focus:ring-4 focus:ring-teal-600/10 focus:border-teal-600 outline-none font-bold" />
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Lista de Perguntas */}
+                  <div className="space-y-4">
+                    {surveyPerguntas.map((perg, idx) => (
+                      <div key={perg.id} className="bg-white dark:bg-gray-900 rounded-[2.5rem] p-8 border border-gray-100 dark:border-gray-800 shadow-lg relative group">
+                        <button onClick={() => removePergunta(perg.id)} className="absolute top-6 right-6 p-2 text-gray-300 hover:text-red-500 transition-colors opacity-0 group-hover:opacity-100"><Trash2 className="h-4 w-4" /></button>
+                        
+                        <div className="flex items-center gap-3 mb-6">
+                          <span className="bg-teal-600 text-white w-8 h-8 rounded-xl flex items-center justify-center font-black text-sm">{idx + 1}</span>
+                          <select
+                            value={perg.tipo}
+                            onChange={e => updatePergunta(perg.id, 'tipo', e.target.value)}
+                            className="px-4 py-2 bg-gray-50 dark:bg-gray-800 rounded-xl border-none text-xs font-black uppercase outline-none text-teal-600"
+                          >
+                            <option value="texto_curto">Texto Curto</option>
+                            <option value="texto_longo">Texto Longo</option>
+                            <option value="multipla_escolha">Múltipla Escolha</option>
+                            <option value="nota">Nota (1-5)</option>
+                          </select>
+                          <label className="flex items-center gap-2 ml-auto text-[10px] font-black text-gray-400 uppercase cursor-pointer">
+                            <input type="checkbox" checked={perg.obrigatoria} onChange={e => updatePergunta(perg.id, 'obrigatoria', e.target.checked)} className="w-4 h-4 rounded text-teal-600 focus:ring-teal-600" />
+                            Obrigatória
+                          </label>
+                        </div>
+
+                        <input
+                          type="text"
+                          value={perg.enunciado}
+                          onChange={e => updatePergunta(perg.id, 'enunciado', e.target.value)}
+                          placeholder="Digite a pergunta aqui..."
+                          className="w-full px-5 py-4 rounded-2xl border border-gray-200 dark:border-gray-800 dark:bg-gray-800 focus:ring-4 focus:ring-teal-600/10 focus:border-teal-600 outline-none font-bold text-lg"
+                        />
+
+                        {perg.tipo === 'multipla_escolha' && (
+                          <div className="mt-6 space-y-3">
+                            <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest">Opções de Resposta</label>
+                            {(perg.opcoes || []).map((op, oIdx) => (
+                              <div key={oIdx} className="flex items-center gap-3">
+                                <span className="text-xs font-black text-gray-300 w-6">{String.fromCharCode(65 + oIdx)})</span>
+                                <input
+                                  type="text"
+                                  value={op}
+                                  onChange={e => updateOpcao(perg.id, oIdx, e.target.value)}
+                                  className="flex-grow px-4 py-3 rounded-xl border border-gray-200 dark:border-gray-800 dark:bg-gray-800 outline-none font-bold text-sm"
+                                  placeholder={`Opção ${oIdx + 1}`}
+                                />
+                                <button onClick={() => removeOpcao(perg.id, oIdx)} className="text-gray-300 hover:text-red-500 p-1"><X className="h-4 w-4" /></button>
+                              </div>
+                            ))}
+                            <button onClick={() => addOpcao(perg.id)} className="text-teal-600 font-black text-xs uppercase flex items-center gap-1 hover:underline"><Plus className="h-4 w-4" /> Adicionar opção</button>
+                          </div>
+                        )}
+
+                        {perg.tipo === 'nota' && (
+                          <div className="mt-4 flex gap-2">
+                            {[1,2,3,4,5].map(n => <div key={n} className="w-10 h-10 rounded-xl bg-gray-100 dark:bg-gray-800 flex items-center justify-center font-black text-gray-400 text-sm">{n}</div>)}
+                            <span className="text-[10px] font-bold text-gray-400 uppercase self-center ml-2">Prévia</span>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Botões de Adicionar Pergunta */}
+                  <div className="flex flex-wrap gap-3">
+                    <button onClick={() => addPergunta('texto_curto')} className="flex items-center gap-2 px-5 py-3 rounded-2xl border-2 border-dashed border-gray-300 dark:border-gray-700 text-gray-400 hover:border-teal-600 hover:text-teal-600 transition-all font-black text-xs uppercase">
+                      <AlignLeft className="h-4 w-4" /> Texto Curto
+                    </button>
+                    <button onClick={() => addPergunta('texto_longo')} className="flex items-center gap-2 px-5 py-3 rounded-2xl border-2 border-dashed border-gray-300 dark:border-gray-700 text-gray-400 hover:border-teal-600 hover:text-teal-600 transition-all font-black text-xs uppercase">
+                      <FileText className="h-4 w-4" /> Texto Longo
+                    </button>
+                    <button onClick={() => addPergunta('multipla_escolha')} className="flex items-center gap-2 px-5 py-3 rounded-2xl border-2 border-dashed border-gray-300 dark:border-gray-700 text-gray-400 hover:border-teal-600 hover:text-teal-600 transition-all font-black text-xs uppercase">
+                      <ListChecks className="h-4 w-4" /> Múltipla Escolha
+                    </button>
+                    <button onClick={() => addPergunta('nota')} className="flex items-center gap-2 px-5 py-3 rounded-2xl border-2 border-dashed border-gray-300 dark:border-gray-700 text-gray-400 hover:border-teal-600 hover:text-teal-600 transition-all font-black text-xs uppercase">
+                      <Star className="h-4 w-4" /> Nota (1-5)
+                    </button>
+                  </div>
+
+                  {/* Salvar */}
+                  <button
+                    onClick={handleSaveSurvey}
+                    disabled={savingSurvey || !surveyTitle || surveyPerguntas.length === 0}
+                    className="w-full bg-black dark:bg-white text-white dark:text-black py-5 rounded-2xl font-black text-xl uppercase shadow-2xl transition-all flex items-center justify-center gap-3 disabled:opacity-30 active:scale-[0.98]"
+                  >
+                    {savingSurvey ? <Loader2 className="h-6 w-6 animate-spin" /> : <><CheckCheck className="h-6 w-6" /> Publicar Pesquisa</>}
+                  </button>
+                </div>
+              )}
+
+              {/* Vista: Resultados de uma Pesquisa */}
+              {surveyView === 'results' && selectedPesquisaResults && (
+                <div className="space-y-8">
+                  <div className="flex items-center gap-4">
+                    <button onClick={() => setSurveyView('list')} className="p-3 rounded-2xl bg-gray-100 dark:bg-gray-800 hover:bg-teal-100 dark:hover:bg-teal-900/30 text-gray-500 hover:text-teal-600 transition-all">
+                      <ChevronLeft className="h-5 w-5" />
+                    </button>
+                    <div>
+                      <h2 className="text-2xl font-black text-gray-900 dark:text-white uppercase tracking-tighter">{selectedPesquisaResults.titulo}</h2>
+                      <p className="text-xs font-bold text-gray-400 uppercase">{surveyResults.length} respostas recebidas</p>
+                    </div>
+                    <button onClick={() => copyLink(selectedPesquisaResults.id)} className="ml-auto bg-teal-600 text-white px-5 py-3 rounded-2xl font-black uppercase text-xs flex items-center gap-2 hover:bg-teal-700 transition-all shadow-lg">
+                      {copiedLink ? <><CheckCheck className="h-4 w-4" /> Copiado!</> : <><Copy className="h-4 w-4" /> Copiar Link</>}
+                    </button>
+                  </div>
+
+                  {surveyResults.length === 0 ? (
+                    <div className="flex flex-col items-center justify-center py-16 text-center bg-white dark:bg-gray-900 rounded-[3rem] border border-gray-100 dark:border-gray-800 shadow-xl">
+                      <ClipboardList className="h-12 w-12 text-gray-300 mb-4" />
+                      <h3 className="text-lg font-black text-gray-400 uppercase">Ainda sem respostas</h3>
+                      <p className="text-sm text-gray-400 mt-2">Compartilhe o link para começar a coletar dados.</p>
+                    </div>
+                  ) : (
+                    <div className="space-y-6">
+                      {selectedPesquisaResults.perguntas.map((perg, idx) => {
+                        const answers = surveyResults.map(r => r.respostas_json[perg.id]).filter(Boolean);
+                        return (
+                          <div key={perg.id} className="bg-white dark:bg-gray-900 rounded-[2.5rem] p-8 border border-gray-100 dark:border-gray-800 shadow-xl">
+                            <h4 className="font-black text-gray-900 dark:text-white uppercase tracking-tight mb-6">
+                              <span className="text-teal-600 mr-2">{idx + 1}.</span>{perg.enunciado}
+                            </h4>
+                            
+                            {(perg.tipo === 'nota') && (
+                              <div className="space-y-4">
+                                <div className="text-5xl font-black text-teal-600">{(answers.reduce((a: number, b: number) => a + b, 0) / answers.length).toFixed(1)}</div>
+                                <p className="text-xs text-gray-400 font-black uppercase">Média de {answers.length} avaliações</p>
+                                <div className="flex gap-2 mt-4">
+                                  {[1,2,3,4,5].map(n => {
+                                    const count = answers.filter((a: number) => a === n).length;
+                                    return (
+                                      <div key={n} className="flex-1 text-center">
+                                        <div className="h-24 bg-gray-100 dark:bg-gray-800 rounded-xl relative overflow-hidden">
+                                          <div className="absolute bottom-0 left-0 right-0 bg-teal-600 rounded-xl transition-all" style={{height: `${(count / answers.length) * 100}%`}}></div>
+                                        </div>
+                                        <span className="text-xs font-black text-gray-500 mt-2 block">{n}★</span>
+                                        <span className="text-[10px] font-bold text-gray-400">{count}</span>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              </div>
+                            )}
+
+                            {(perg.tipo === 'multipla_escolha') && (
+                              <div className="space-y-3">
+                                {(perg.opcoes || []).map((op, oIdx) => {
+                                  const count = answers.filter((a: string) => a === op).length;
+                                  const pct = answers.length > 0 ? (count / answers.length) * 100 : 0;
+                                  return (
+                                    <div key={oIdx}>
+                                      <div className="flex justify-between mb-1"><span className="text-xs font-black text-gray-700 dark:text-gray-300 uppercase">{op}</span><span className="text-xs font-black text-teal-600">{count} ({pct.toFixed(0)}%)</span></div>
+                                      <div className="h-3 bg-gray-100 dark:bg-gray-800 rounded-full overflow-hidden"><div className="h-full bg-teal-600 rounded-full transition-all duration-700" style={{width: `${pct}%`}}></div></div>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            )}
+
+                            {(perg.tipo === 'texto_curto' || perg.tipo === 'texto_longo') && (
+                              <div className="space-y-3 max-h-60 overflow-y-auto custom-scrollbar pr-2">
+                                {answers.map((a: string, aIdx: number) => (
+                                  <div key={aIdx} className="p-4 bg-gray-50 dark:bg-gray-800 rounded-2xl text-sm text-gray-700 dark:text-gray-300 font-medium">"{a}"</div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Aba: INTELIGÊNCIA ARTIFICIAL */}
+          {activeTab === 'ai' && (
+            <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
+              {/* Cabeçalho da IA */}
+              <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 bg-gradient-to-r from-teal-600 to-emerald-600 p-8 rounded-[2.5rem] text-white shadow-xl relative overflow-hidden">
+                <div className="absolute top-0 right-0 -mr-16 -mt-16 w-64 h-64 bg-white/10 rounded-full blur-3xl"></div>
+                <div className="space-y-2 z-10">
+                  <h2 className="text-3xl font-black uppercase tracking-tighter flex items-center gap-2">
+                    <Brain className="h-8 w-8 text-amber-300 animate-pulse" /> RH Copilot IA
+                  </h2>
+                  <p className="text-teal-50 text-sm font-medium max-w-xl">
+                    Utilize inteligência artificial para analisar feedbacks de pesquisas, detectar alertas e sugerir planos de ação ou ranquear candidatos com maior aderência técnica.
+                  </p>
+                </div>
+                
+                {/* Seletor de sub-aba */}
+                <div className="flex bg-white/15 p-1.5 rounded-2xl z-10 self-start md:self-center border border-white/10 shrink-0">
+                  <button
+                    onClick={() => setAiSubTab('surveys')}
+                    className={`px-5 py-2.5 rounded-xl text-xs font-black uppercase tracking-wider transition-all ${aiSubTab === 'surveys' ? 'bg-white text-teal-800 shadow-md' : 'text-white hover:bg-white/5'}`}
+                  >
+                    Análise de Pesquisas
+                  </button>
+                  <button
+                    onClick={() => setAiSubTab('talents')}
+                    className={`px-5 py-2.5 rounded-xl text-xs font-black uppercase tracking-wider transition-all ${aiSubTab === 'talents' ? 'bg-white text-teal-800 shadow-md' : 'text-white hover:bg-white/5'}`}
+                  >
+                    Triagem de Currículos
+                  </button>
+                </div>
+              </div>
+
+              {/* Seletor de Modelo Geral */}
+              <div className="bg-white dark:bg-gray-900 rounded-[2.5rem] p-6 border border-gray-100 dark:border-gray-800 shadow-lg flex flex-col md:flex-row gap-6 justify-between items-start md:items-center">
+                <div className="space-y-1">
+                  <h3 className="font-black text-gray-900 dark:text-white uppercase tracking-tight text-sm flex items-center gap-2">
+                    <Settings className="h-4 w-4 text-teal-600" /> Parâmetros do Motor Cognitivo
+                  </h3>
+                  <p className="text-xs text-gray-400 font-bold">Defina o fornecedor e o modelo de processamento de linguagem.</p>
+                </div>
+
+                <div className="flex flex-wrap gap-4 w-full md:w-auto">
+                  <div className="flex bg-gray-100 dark:bg-gray-800 p-1 rounded-2xl border border-gray-200/50 dark:border-gray-700 w-full sm:w-auto">
+                    <button
+                      onClick={() => setAiProvider('ollama')}
+                      className={`flex-1 sm:flex-initial px-4 py-2 rounded-xl text-xs font-black uppercase transition-all ${aiProvider === 'ollama' ? 'bg-white dark:bg-gray-700 text-teal-600 dark:text-teal-400 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
+                    >
+                      Ollama (Local VPS)
+                    </button>
+                    <button
+                      onClick={() => setAiProvider('gemini')}
+                      className={`flex-1 sm:flex-initial px-4 py-2 rounded-xl text-xs font-black uppercase transition-all ${aiProvider === 'gemini' ? 'bg-white dark:bg-gray-700 text-teal-600 dark:text-teal-400 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
+                    >
+                      Google Gemini
+                    </button>
+                  </div>
+
+                  {aiProvider === 'ollama' && (
+                    <select
+                      value={ollamaModel}
+                      onChange={(e) => setOllamaModel(e.target.value)}
+                      className="px-4 py-2 rounded-2xl border border-gray-200 dark:border-gray-700 dark:bg-gray-800 text-xs font-black uppercase outline-none focus:border-teal-600 w-full sm:w-auto cursor-pointer"
+                    >
+                      <option value="llama3.2:3b">Llama 3.2 (3B)</option>
+                      <option value="qwen2.5:1.5b">Qwen 2.5 (1.5B)</option>
+                      <option value="phi3.5:latest">Microsoft Phi-3.5</option>
+                      <option value="deepseek-v4-pro:cloud">DeepSeek v4 Pro</option>
+                    </select>
+                  )}
+
+                  {aiProvider === 'gemini' && !geminiKey && (
+                    <div className="text-red-500 text-xs font-black uppercase flex items-center gap-1.5 px-3 py-2 bg-red-50 dark:bg-red-950/20 rounded-2xl border border-red-100 dark:border-red-900/30">
+                      <AlertTriangle className="h-4 w-4 animate-pulse" /> Cadastre sua chave nas Configurações!
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Sub-aba 1: Análise de Pesquisas */}
+              {aiSubTab === 'surveys' && (
+                <div className="grid grid-cols-1 xl:grid-cols-3 gap-8 items-start">
+                  
+                  {/* Seletor de Pesquisa */}
+                  <div className="xl:col-span-1 bg-white dark:bg-gray-900 rounded-[2.5rem] p-8 border border-gray-100 dark:border-gray-800 shadow-xl space-y-6">
+                    <div className="space-y-2">
+                      <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest block">Selecione a Pesquisa</label>
+                      <select
+                        value={selectedAiSurveyId}
+                        onChange={(e) => {
+                          setSelectedAiSurveyId(e.target.value);
+                          setSurveyAnalysisResult(null);
+                        }}
+                        className="w-full px-5 py-4 rounded-2xl border border-gray-200 dark:border-gray-800 dark:bg-gray-800 outline-none focus:ring-4 focus:ring-teal-600/10 focus:border-teal-600 font-bold cursor-pointer"
+                      >
+                        <option value="">-- Selecione uma pesquisa --</option>
+                        {pesquisas.map((p) => (
+                          <option key={p.id} value={p.id}>
+                            {p.titulo}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    {selectedAiSurveyId && (
+                      <div className="p-5 bg-teal-50/50 dark:bg-teal-950/10 rounded-3xl border border-teal-100/50 dark:border-teal-900/20 space-y-4 animate-in fade-in duration-300">
+                        {(() => {
+                          const survey = pesquisas.find(p => p.id === selectedAiSurveyId);
+                          const count = surveyResponseCounts[selectedAiSurveyId] || 0;
+                          return (
+                            <>
+                              <div className="space-y-1">
+                                <h4 className="font-black text-teal-800 dark:text-teal-400 uppercase text-xs tracking-wider">Metadados da Pesquisa</h4>
+                                <p className="text-xs text-gray-500 font-medium">{survey?.descricao || 'Sem descrição cadastrada.'}</p>
+                              </div>
+                              <div className="grid grid-cols-2 gap-4">
+                                <div className="bg-white dark:bg-gray-800 p-4 rounded-2xl text-center shadow-sm">
+                                  <div className="text-2xl font-black text-teal-600">{count}</div>
+                                  <div className="text-[9px] font-black uppercase text-gray-400">Respostas</div>
+                                </div>
+                                <div className="bg-white dark:bg-gray-800 p-4 rounded-2xl text-center shadow-sm">
+                                  <div className="text-2xl font-black text-teal-600">{survey?.perguntas.length}</div>
+                                  <div className="text-[9px] font-black uppercase text-gray-400">Perguntas</div>
+                                </div>
+                              </div>
+                            </>
+                          );
+                        })()}
+                      </div>
+                    )}
+
+                    <button
+                      onClick={handleAnalyzeSurvey}
+                      disabled={analyzingSurvey || !selectedAiSurveyId || (aiProvider === 'gemini' && !geminiKey)}
+                      className="w-full bg-teal-600 hover:bg-teal-700 text-white disabled:bg-gray-150 dark:disabled:bg-gray-800 disabled:text-gray-400 py-4 rounded-2xl font-black uppercase text-xs tracking-wider transition-all flex items-center justify-center gap-2 shadow-lg shadow-teal-600/10"
+                    >
+                      {analyzingSurvey ? (
+                        <>
+                          <Loader2 className="h-4 w-4 animate-spin" /> Mapeando Clima...
+                        </>
+                      ) : (
+                        <>
+                          <Sparkles className="h-4 w-4" /> Iniciar Análise Cognitiva
+                        </>
+                      )}
+                    </button>
+                  </div>
+
+                  {/* Resultados da Análise de Pesquisa */}
+                  <div className="xl:col-span-2 space-y-6">
+                    {analyzingSurvey && (
+                      <div className="bg-white dark:bg-gray-900 rounded-[2.5rem] p-12 border border-gray-100 dark:border-gray-800 shadow-xl flex flex-col items-center justify-center text-center space-y-6">
+                        <div className="relative">
+                          <Brain className="h-20 w-20 text-teal-600 animate-pulse" />
+                          <Sparkles className="h-8 w-8 text-amber-400 absolute top-0 right-0 animate-bounce" />
+                        </div>
+                        <div className="space-y-2 max-w-md">
+                          <h3 className="text-lg font-black uppercase tracking-tight text-gray-900 dark:text-white">A IA está mapeando o Clima</h3>
+                          <p className="text-sm text-gray-500 font-medium">Lendo feedbacks individuais, ponderando média de notas e gerando o plano estratégico de ação...</p>
+                        </div>
+                        <div className="w-48 h-1.5 bg-gray-100 dark:bg-gray-800 rounded-full overflow-hidden">
+                          <div className="h-full bg-teal-600 rounded-full animate-[loading_2s_infinite] w-2/3"></div>
+                        </div>
+                      </div>
+                    )}
+
+                    {!analyzingSurvey && !surveyAnalysisResult && (
+                      <div className="bg-white dark:bg-gray-900 rounded-[2.5rem] p-16 border border-gray-100 dark:border-gray-800 shadow-xl flex flex-col items-center justify-center text-center space-y-4">
+                        <div className="bg-teal-50 dark:bg-teal-900/15 p-6 rounded-full text-teal-600">
+                          <Brain className="h-16 w-16" />
+                        </div>
+                        <h3 className="text-xl font-black text-gray-900 dark:text-white uppercase tracking-tighter">Relatório de IA Pendente</h3>
+                        <p className="text-gray-500 max-w-md text-sm font-medium">
+                          Selecione uma pesquisa e clique no botão à esquerda para que o Copilot RH processe as respostas e trace as prioridades do clima.
+                        </p>
+                      </div>
+                    )}
+
+                    {surveyAnalysisResult && (
+                      <div className="space-y-6 animate-in fade-in slide-in-from-right-4 duration-500">
+                        {/* Sentimento & Resumo */}
+                        <div className="bg-white dark:bg-gray-900 rounded-[2.5rem] p-8 border border-gray-100 dark:border-gray-800 shadow-xl space-y-6">
+                          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-gray-100 dark:border-gray-800 pb-6">
+                            <h3 className="font-black text-lg text-gray-900 dark:text-white uppercase tracking-tighter">Relatório Cognitivo do Clima</h3>
+                            
+                            <div className="flex items-center gap-2">
+                              <span className="text-[10px] font-black uppercase text-gray-400">Sentimento Geral:</span>
+                              {surveyAnalysisResult.sentiment === 'positivo' && (
+                                <span className="bg-green-50 text-green-700 dark:bg-green-950/20 dark:text-green-400 px-4 py-1.5 rounded-full font-black uppercase text-[10px] tracking-wider flex items-center gap-1 border border-green-200/50">
+                                  <ThumbsUp className="h-3 w-3" /> Positivo 😄
+                                </span>
+                              )}
+                              {surveyAnalysisResult.sentiment === 'negativo' && (
+                                <span className="bg-red-50 text-red-700 dark:bg-red-950/20 dark:text-red-400 px-4 py-1.5 rounded-full font-black uppercase text-[10px] tracking-wider flex items-center gap-1 border border-red-200/50">
+                                  <ThumbsDown className="h-3 w-3" /> Negativo 😡
+                                </span>
+                              )}
+                              {surveyAnalysisResult.sentiment === 'misto' && (
+                                <span className="bg-amber-50 text-amber-700 dark:bg-amber-950/20 dark:text-amber-400 px-4 py-1.5 rounded-full font-black uppercase text-[10px] tracking-wider flex items-center gap-1 border border-amber-200/50">
+                                  <RefreshCw className="h-3 w-3 animate-spin-slow" /> Misto 🤔
+                                </span>
+                              )}
+                              {surveyAnalysisResult.sentiment === 'neutro' && (
+                                <span className="bg-gray-50 text-gray-700 dark:bg-gray-800 dark:text-gray-300 px-4 py-1.5 rounded-full font-black uppercase text-[10px] tracking-wider flex items-center gap-1 border border-gray-200">
+                                  Neutro 😐
+                                </span>
+                              )}
+                            </div>
+                          </div>
+
+                          <div className="space-y-2">
+                            <h4 className="font-black text-xs text-gray-400 uppercase tracking-widest">Resumo Executivo</h4>
+                            <p className="text-gray-700 dark:text-gray-300 text-sm font-medium leading-relaxed bg-gray-50/50 dark:bg-gray-800/40 p-5 rounded-3xl border border-gray-100 dark:border-gray-800/80">
+                              {surveyAnalysisResult.summary}
+                            </p>
+                          </div>
+                        </div>
+
+                        {/* Pontos Fortes e Pontos Críticos */}
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                          {/* Pontos Fortes */}
+                          <div className="bg-white dark:bg-gray-900 rounded-[2.5rem] p-8 border border-gray-100 dark:border-gray-800 shadow-xl space-y-4">
+                            <h4 className="font-black text-xs text-green-600 dark:text-green-400 uppercase tracking-widest flex items-center gap-2">
+                              <ThumbsUp className="h-4 w-4" /> Pontos Fortes / Elogios
+                            </h4>
+                            <ul className="space-y-3">
+                              {surveyAnalysisResult.positivePoints.map((item, idx) => (
+                                <li key={idx} className="flex gap-2 text-xs font-semibold text-gray-600 dark:text-gray-300 leading-relaxed">
+                                  <span className="text-green-500 font-bold shrink-0">✓</span>
+                                  <span>{item}</span>
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+
+                          {/* Pontos Críticos */}
+                          <div className="bg-white dark:bg-gray-900 rounded-[2.5rem] p-8 border border-gray-100 dark:border-gray-800 shadow-xl space-y-4">
+                            <h4 className="font-black text-xs text-red-600 dark:text-red-400 uppercase tracking-widest flex items-center gap-2">
+                              <ThumbsDown className="h-4 w-4" /> Pontos de Atenção / Queixas
+                            </h4>
+                            <ul className="space-y-3">
+                              {surveyAnalysisResult.criticalPoints.map((item, idx) => (
+                                <li key={idx} className="flex gap-2 text-xs font-semibold text-gray-600 dark:text-gray-300 leading-relaxed">
+                                  <span className="text-red-500 font-bold shrink-0">✗</span>
+                                  <span>{item}</span>
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        </div>
+
+                        {/* Alertas Urgentes */}
+                        {surveyAnalysisResult.alerts.length > 0 && (
+                          <div className="bg-red-50/50 dark:bg-red-950/15 rounded-[2.5rem] p-6 sm:p-8 border border-red-100 dark:border-red-950/20 space-y-4 shadow-sm animate-in zoom-in-95">
+                            <h4 className="font-black text-xs text-red-700 dark:text-red-400 uppercase tracking-widest flex items-center gap-2">
+                              <AlertTriangle className="h-5 w-5 text-red-600 animate-bounce" /> Alertas Críticos Identificados
+                            </h4>
+                            <div className="space-y-2">
+                              {surveyAnalysisResult.alerts.map((alert, idx) => (
+                                <p key={idx} className="text-xs font-bold text-red-800 dark:text-red-300 bg-white/80 dark:bg-gray-900/50 px-4 py-3.5 rounded-2xl border border-red-100/50 dark:border-red-900/30 flex items-start gap-2">
+                                  <span className="text-red-500">•</span>
+                                  <span>{alert}</span>
+                                </p>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Plano de Ação */}
+                        <div className="bg-white dark:bg-gray-900 rounded-[2.5rem] p-8 border border-gray-100 dark:border-gray-800 shadow-xl space-y-4">
+                          <h4 className="font-black text-xs text-teal-600 uppercase tracking-widest flex items-center gap-2">
+                            <Zap className="h-4 w-4" /> Plano de Ação Recomendado (RH)
+                          </h4>
+                          <div className="space-y-3">
+                            {surveyAnalysisResult.actionPlan.map((action, idx) => (
+                              <div key={idx} className="flex items-start gap-4 p-4 rounded-2xl bg-gray-50 dark:bg-gray-800 border border-gray-100/50 dark:border-gray-700 hover:border-teal-500 dark:hover:border-teal-400 transition-all group">
+                                <div className="bg-teal-50 dark:bg-teal-900/30 text-teal-700 dark:text-teal-400 font-black rounded-lg h-7 w-7 flex items-center justify-center shrink-0 text-xs">
+                                  {idx + 1}
+                                </div>
+                                <p className="text-xs font-bold text-gray-700 dark:text-gray-300 pt-1 group-hover:text-teal-900 dark:group-hover:text-white transition-colors">{action}</p>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+
+                      </div>
+                    )}
+                  </div>
+
+                </div>
+              )}
+
+              {/* Sub-aba 2: Triagem de Currículos */}
+              {aiSubTab === 'talents' && (
+                <div className="grid grid-cols-1 xl:grid-cols-3 gap-8 items-start">
+                  
+                  {/* Filtro de Vagas */}
+                  <div className="xl:col-span-1 bg-white dark:bg-gray-900 rounded-[2.5rem] p-8 border border-gray-100 dark:border-gray-800 shadow-xl space-y-6">
+                    <div className="space-y-2">
+                      <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest block">Selecione o Cargo da Vaga</label>
+                      <select
+                        value={selectedAiCargo}
+                        onChange={(e) => handleSelectAiCargo(e.target.value)}
+                        className="w-full px-5 py-4 rounded-2xl border border-gray-200 dark:border-gray-800 dark:bg-gray-800 outline-none focus:ring-4 focus:ring-teal-600/10 focus:border-teal-600 font-bold cursor-pointer"
+                      >
+                        <option value="">-- Selecione uma vaga --</option>
+                        {cargos.map((c) => (
+                          <option key={c.id} value={c.nome}>
+                            {c.nome}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    {selectedAiCargo && (
+                      <div className="p-5 bg-teal-50/50 dark:bg-teal-950/10 rounded-3xl border border-teal-100/50 dark:border-teal-900/20 space-y-2 animate-in fade-in duration-300">
+                        <h4 className="font-black text-teal-800 dark:text-teal-400 uppercase text-xs tracking-wider">Candidatos Inscritos</h4>
+                        <div className="text-3xl font-black text-teal-600">{matchingTalents.length}</div>
+                        <p className="text-[10px] font-black uppercase text-gray-400">Currículos cadastrados para esta vaga</p>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Listagem e Matching de Talentos */}
+                  <div className="xl:col-span-2 space-y-6">
+                    {!selectedAiCargo && (
+                      <div className="bg-white dark:bg-gray-900 rounded-[2.5rem] p-16 border border-gray-100 dark:border-gray-800 shadow-xl flex flex-col items-center justify-center text-center space-y-4">
+                        <div className="bg-gray-50 dark:bg-gray-800 p-6 rounded-full text-gray-400">
+                          <Users className="h-16 w-16" />
+                        </div>
+                        <h3 className="text-xl font-black text-gray-900 dark:text-white uppercase tracking-tighter">Seleção Requerida</h3>
+                        <p className="text-gray-500 max-w-md text-sm font-medium">
+                          Selecione um cargo à esquerda para visualizar todos os candidatos que manifestaram interesse nesta oportunidade e rodar a triagem cognitiva.
+                        </p>
+                      </div>
+                    )}
+
+                    {selectedAiCargo && matchingTalents.length === 0 && (
+                      <div className="bg-white dark:bg-gray-900 rounded-[2.5rem] p-16 border border-gray-100 dark:border-gray-800 shadow-xl flex flex-col items-center justify-center text-center space-y-4">
+                        <div className="bg-amber-50 dark:bg-amber-950/20 p-6 rounded-full text-amber-500">
+                          <Users className="h-16 w-16" />
+                        </div>
+                        <h3 className="text-xl font-black text-gray-900 dark:text-white uppercase tracking-tighter">Sem Candidatos Inscritos</h3>
+                        <p className="text-gray-500 max-w-md text-sm font-medium">
+                          Não encontramos nenhum candidato cadastrado no banco com interesse direto para a vaga de "{selectedAiCargo}" no momento.
+                        </p>
+                      </div>
+                    )}
+
+                    {selectedAiCargo && matchingTalents.length > 0 && (
+                      <div className="space-y-6">
+                        <h3 className="font-black text-gray-900 dark:text-white uppercase tracking-tighter text-xl">Triagem de Candidatos - {selectedAiCargo}</h3>
+                        
+                        <div className="space-y-4">
+                          {matchingTalents.map((cand) => {
+                            const analysis = talentAnalysisResults[cand.id];
+                            const isAnalyzing = analyzingTalentId === cand.id;
+
+                            return (
+                              <div key={cand.id} className="bg-white dark:bg-gray-900 rounded-[2.5rem] p-6 sm:p-8 border border-gray-100 dark:border-gray-800 shadow-lg space-y-6 hover:shadow-xl transition-all">
+                                <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 border-b border-gray-50 dark:border-gray-850 pb-4">
+                                  <div className="space-y-1">
+                                    <h4 className="font-black text-lg text-gray-900 dark:text-white">{cand.nome}</h4>
+                                    <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-gray-400 font-bold uppercase">
+                                      <span className="flex items-center gap-1"><MapPin className="h-3 w-3" /> {cand.cidade}</span>
+                                      <span>{cand.escolaridade}</span>
+                                    </div>
+                                  </div>
+
+                                  <div className="flex items-center gap-3">
+                                    {analysis && (
+                                      <div className="flex items-center gap-2">
+                                        <span className={`px-4 py-1.5 rounded-full font-black uppercase text-[10px] tracking-wider ${
+                                          analysis.recommendation === 'Recomendado' ? 'bg-green-50 text-green-700 dark:bg-green-950/20 dark:text-green-400' :
+                                          analysis.recommendation === 'Potencial' ? 'bg-amber-50 text-amber-700 dark:bg-amber-950/20 dark:text-amber-400' :
+                                          'bg-red-50 text-red-700 dark:bg-red-950/20'
+                                        }`}>
+                                          {analysis.recommendation}
+                                        </span>
+                                        <div className="bg-teal-50 dark:bg-teal-900/20 px-3.5 py-1.5 rounded-full text-teal-600 dark:text-teal-400 font-black text-xs">
+                                          Score: {analysis.score}%
+                                        </div>
+                                      </div>
+                                    )}
+
+                                    <button
+                                      onClick={() => handleAnalyzeTalent(cand)}
+                                      disabled={isAnalyzing || (aiProvider === 'gemini' && !geminiKey)}
+                                      className="bg-teal-50 dark:bg-teal-900/20 text-teal-600 hover:bg-teal-100 hover:text-teal-700 dark:hover:bg-teal-900/40 text-xs font-black uppercase px-4 py-2.5 rounded-xl transition-all flex items-center gap-1.5 shadow-sm"
+                                    >
+                                      {isAnalyzing ? (
+                                        <>
+                                          <Loader2 className="h-3.5 w-3.5 animate-spin" /> Analisando...
+                                        </>
+                                      ) : (
+                                        <>
+                                          <Sparkles className="h-3.5 w-3.5" /> {analysis ? 'Reavaliar com IA' : 'Triagem de IA'}
+                                        </>
+                                      )}
+                                    </button>
+                                  </div>
+                                </div>
+
+                                {/* Resumo de Apresentação original */}
+                                <div className="space-y-1 bg-gray-50/50 dark:bg-gray-800/40 p-4 rounded-2xl border border-gray-100/50 dark:border-gray-800 text-xs">
+                                  <span className="font-black text-gray-400 uppercase tracking-wider block">Pitch do Candidato</span>
+                                  <p className="text-gray-600 dark:text-gray-300 font-medium italic">"{cand.resumo || 'Sem apresentação cadastrada.'}"</p>
+                                  {cand.tecnologias && (
+                                    <div className="pt-2 flex flex-wrap gap-1.5">
+                                      {cand.tecnologias.split(',').map((t, idx) => (
+                                        <span key={idx} className="bg-white dark:bg-gray-800 px-2 py-0.5 rounded-lg border border-gray-200 dark:border-gray-700 text-[9px] font-bold text-gray-500 uppercase">{t.trim()}</span>
+                                      ))}
+                                    </div>
+                                  )}
+                                </div>
+
+                                {/* Resultado da Triagem Inteligente */}
+                                {analysis && (
+                                  <div className="space-y-4 bg-teal-50/30 dark:bg-teal-950/10 p-5 sm:p-6 rounded-[2rem] border border-teal-100/30 dark:border-teal-900/10 animate-in zoom-in-95 duration-300">
+                                    <div className="space-y-1">
+                                      <h5 className="font-black text-teal-800 dark:text-teal-400 uppercase text-[10px] tracking-widest flex items-center gap-1"><Brain className="h-3.5 w-3.5"/> Diagnóstico Cognitivo</h5>
+                                      <p className="text-gray-700 dark:text-gray-300 text-xs font-semibold leading-relaxed">{analysis.summary}</p>
+                                    </div>
+
+                                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2">
+                                      <div className="space-y-1">
+                                        <span className="text-[9px] font-black uppercase text-green-600 tracking-wider">Fortalezas do Candidato</span>
+                                        <div className="space-y-1">
+                                          {analysis.strengths.map((str, sIdx) => (
+                                            <div key={sIdx} className="flex gap-1.5 text-[10px] font-bold text-gray-600 dark:text-gray-400">
+                                              <span className="text-green-500">✓</span> <span>{str}</span>
+                                            </div>
+                                          ))}
+                                        </div>
+                                      </div>
+
+                                      <div className="space-y-1">
+                                        <span className="text-[9px] font-black uppercase text-amber-600 tracking-wider">Pontos de Atenção</span>
+                                        <div className="space-y-1">
+                                          {analysis.weaknesses.map((wkn, wIdx) => (
+                                            <div key={wIdx} className="flex gap-1.5 text-[10px] font-bold text-gray-600 dark:text-gray-400">
+                                              <span className="text-amber-500">⚠</span> <span>{wkn}</span>
+                                            </div>
+                                          ))}
+                                        </div>
+                                      </div>
+                                    </div>
+                                  </div>
+                                )}
+
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                </div>
+              )}
+
+            </div>
+          )}
+
+          {/* Aba: MURAL DE VAGAS */}
+          {activeTab === 'jobs' && (
+            <div className="flex flex-col items-center justify-center py-24 text-center animate-in zoom-in-95 duration-500">
+              <div className="bg-teal-50 dark:bg-teal-900/20 p-6 rounded-full mb-6">
+                <Briefcase className="h-16 w-16 text-teal-600" />
+              </div>
+              <h3 className="text-2xl font-black text-gray-900 dark:text-white uppercase tracking-tighter mb-3">
+                Mural de Vagas e Landing Pages
+              </h3>
+              <p className="text-gray-500 max-w-md font-medium">
+                Este módulo está na pauta da próxima fase. Em breve você poderá criar páginas dinâmicas para captação de talentos de cada cargo!
+              </p>
+            </div>
+          )}
+
+          {/* Aba: CONFIGURAÇÕES */}
+          {activeTab === 'settings' && (
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 animate-in slide-in-from-right-4 duration-500">
+              <ConfigCard title="Rede de Cidades" items={cidades} onAdd={() => handleAddItem('cidades')} onDelete={(id) => handleDeleteItem('cidades', id)} newItem={newItem} setNewItem={setNewItem} />
+              <ConfigCard title="Cargos/Vagas" items={cargos} onAdd={() => handleAddItem('cargos')} onDelete={(id) => handleDeleteItem('cargos', id)} newItem={newItem} setNewItem={setNewItem} />
+              
+              {/* Box de Setup da IA */}
+              <div className="lg:col-span-2 bg-white dark:bg-gray-900 p-8 rounded-[3rem] border border-gray-100 dark:border-gray-800 shadow-xl space-y-6">
+                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-gray-100 dark:border-gray-800">
+                   <div className="space-y-1">
+                     <h3 className="font-black text-xl text-gray-900 dark:text-white uppercase tracking-tighter flex items-center gap-2">
+                       <Sparkles className="text-teal-600 h-6 w-6"/> API Keys e Motores de IA
+                     </h3>
+                     <p className="text-sm text-gray-500">Configure o endereço da sua VPS (Ollama) ou chaves do Gemini para habilitar a aba de Análise.</p>
+                   </div>
+                   {geminiSaveStatus === 'saved' && (
+                     <div className="bg-green-50 dark:bg-green-950/20 text-green-600 dark:text-green-400 px-4 py-2 rounded-2xl text-xs font-black uppercase flex items-center gap-1.5 self-start sm:self-center shadow-sm animate-in zoom-in-95">
+                       <Check className="h-4 w-4" /> Salvo com sucesso!
+                     </div>
+                   )}
+                 </div>
+
+                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div className="space-y-2">
+                      <label className="text-xs font-black uppercase text-gray-500">URL do Ollama (VPS)</label>
+                      <input type="text" disabled defaultValue="http://128.140.120.73:11434" className="w-full px-5 py-3 rounded-2xl bg-gray-50 dark:bg-gray-850 border border-gray-250 dark:border-gray-800 text-gray-500 opacity-75" />
+                    </div>
+                    <div className="space-y-2">
+                      <div className="flex justify-between items-center">
+                        <label className="text-xs font-black uppercase text-gray-500">Gemini API Key</label>
+                        {geminiKey && (
+                          <span className="text-[10px] bg-teal-50 dark:bg-teal-900/30 text-teal-600 px-2 py-0.5 rounded-md font-bold uppercase">Ativa</span>
+                        )}
+                      </div>
+                      <input 
+                        type="password" 
+                        value={geminiKey} 
+                        onChange={(e) => handleSaveGeminiKey(e.target.value)} 
+                        placeholder="Insira sua chave Gemini API (AIzaSy...)" 
+                        className="w-full px-5 py-3 rounded-2xl bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 outline-none focus:border-teal-600 font-bold focus:ring-4 focus:ring-teal-600/5 transition-all text-xs" 
+                      />
+                    </div>
+                 </div>
+              </div>
+
+              {/* Box de Treinamento de Agentes de IA */}
+              <div className="lg:col-span-2 bg-white dark:bg-gray-900 p-8 rounded-[3rem] border border-gray-100 dark:border-gray-800 shadow-xl space-y-6">
+                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-gray-100 dark:border-gray-800">
+                   <div className="space-y-1">
+                     <h3 className="font-black text-xl text-gray-900 dark:text-white uppercase tracking-tighter flex items-center gap-2">
+                       <Brain className="text-teal-600 h-6 w-6"/> Treinamento & Instruções dos Agentes (Copilot)
+                     </h3>
+                     <p className="text-sm text-gray-500">Customize o prompt de sistema e as regras de avaliação de cada agente cognitivo de forma independente.</p>
+                   </div>
+                   
+                   <div className="flex items-center gap-3">
+                     <button
+                       onClick={handleResetPrompts}
+                       className="bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 text-xs font-black uppercase px-4 py-2.5 rounded-xl transition-all flex items-center gap-1.5"
+                     >
+                       <RefreshCw className="h-3.5 w-3.5" /> Padrão
+                     </button>
+                     <button
+                       onClick={handleSavePrompts}
+                       className="bg-teal-600 text-white hover:bg-teal-700 text-xs font-black uppercase px-5 py-2.5 rounded-xl transition-all flex items-center gap-1.5 shadow-md hover:shadow-lg focus:ring-4 focus:ring-teal-600/20"
+                     >
+                       {promptSaveStatus === 'saved' ? (
+                         <>
+                           <Check className="h-3.5 w-3.5" /> Salvo!
+                         </>
+                       ) : (
+                         <>
+                           <Zap className="h-3.5 w-3.5" /> Salvar Agentes
+                         </>
+                       )}
+                     </button>
+                   </div>
+                 </div>
+
+                 <div className="grid grid-cols-1 xl:grid-cols-2 gap-8 pt-2">
+                    {/* Agente 1: Analista de Clima (Pesquisas) */}
+                    <div className="space-y-3 bg-gray-50/50 dark:bg-gray-850 p-6 rounded-[2rem] border border-gray-100 dark:border-gray-800 flex flex-col justify-between">
+                      <div className="space-y-2">
+                        <div className="flex items-center gap-2 border-b border-gray-100 dark:border-gray-800 pb-2">
+                          <div className="bg-teal-50 dark:bg-teal-900/30 text-teal-600 dark:text-teal-400 p-2 rounded-xl">
+                            <ClipboardList className="h-4 w-4" />
+                          </div>
+                          <div>
+                            <h4 className="font-black text-sm text-gray-900 dark:text-white uppercase tracking-tight">Agente Analista de Clima</h4>
+                            <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest">Análise de Pesquisas Internas</p>
+                          </div>
+                        </div>
+                        <p className="text-xs text-gray-500 leading-relaxed font-medium">
+                          Este agente processa os volumes de respostas de colaboradores. Edite abaixo as instruções de foco (ex: orientar tom, priorizar críticas construtivas, buscar palavras-chave):
+                        </p>
+                        <textarea
+                          rows={6}
+                          value={promptSurveys}
+                          onChange={(e) => setPromptSurveys(e.target.value)}
+                          placeholder="Digite as diretrizes do agente analista de clima..."
+                          className="w-full px-4 py-3 text-xs rounded-xl bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 outline-none focus:border-teal-600 font-semibold focus:ring-4 focus:ring-teal-600/5 transition-all resize-none leading-relaxed"
+                        />
+                      </div>
+                      <div className="pt-2 text-[10px] font-black text-teal-600 uppercase tracking-wider flex items-center gap-1.5">
+                        <span>💡 O formato de saída JSON da análise é preservado automaticamente</span>
+                      </div>
+                    </div>
+
+                    {/* Agente 2: Recrutador Cognitivo (Triagem) */}
+                    <div className="space-y-3 bg-gray-50/50 dark:bg-gray-850 p-6 rounded-[2rem] border border-gray-100 dark:border-gray-800 flex flex-col justify-between">
+                      <div className="space-y-2">
+                        <div className="flex items-center gap-2 border-b border-gray-100 dark:border-gray-800 pb-2">
+                          <div className="bg-teal-50 dark:bg-teal-900/30 text-teal-600 dark:text-teal-400 p-2 rounded-xl">
+                            <Users className="h-4 w-4" />
+                          </div>
+                          <div>
+                            <h4 className="font-black text-sm text-gray-900 dark:text-white uppercase tracking-tight">Agente Recrutador Cognitivo</h4>
+                            <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest">Triagem de Currículos</p>
+                          </div>
+                        </div>
+                        <p className="text-xs text-gray-500 leading-relaxed font-medium">
+                          Este agente avalia a compatibilidade de um candidato com o cargo de interesse. Edite o perfil ideal, a cultura da empresa ou o rigor técnico:
+                        </p>
+                        <textarea
+                          rows={6}
+                          value={promptTalents}
+                          onChange={(e) => setPromptTalents(e.target.value)}
+                          placeholder="Digite as diretrizes de triagem técnica e cultural..."
+                          className="w-full px-4 py-3 text-xs rounded-xl bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 outline-none focus:border-teal-600 font-semibold focus:ring-4 focus:ring-teal-600/5 transition-all resize-none leading-relaxed"
+                        />
+                      </div>
+                      <div className="pt-2 text-[10px] font-black text-teal-600 uppercase tracking-wider flex items-center gap-1.5">
+                        <span>💡 O score e os campos de qualificação serão calculados conforme seu prompt</span>
+                      </div>
+                    </div>
+                 </div>
+              </div>
+            </div>
+          )}
+
+        </div>
+      </main>
+
+      {/* Detail Modal (Banco de Talentos) */}
+      {selectedResume && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/80 backdrop-blur-xl animate-in fade-in duration-300">
+          <div className="bg-white dark:bg-gray-900 rounded-[3rem] w-full max-w-2xl max-h-[90vh] overflow-hidden flex flex-col shadow-2xl border border-gray-100 dark:border-gray-800">
+            <div className="px-8 py-6 border-b border-gray-100 dark:border-gray-800 flex items-center justify-between bg-gray-50/30 dark:bg-gray-800/30">
+              <h2 className="text-xl font-black text-gray-900 dark:text-white uppercase tracking-tighter">Detalhes do Candidato</h2>
+              <button onClick={() => setSelectedResume(null)} className="p-2 hover:bg-teal-100 dark:hover:bg-teal-900/30 text-teal-600 rounded-full transition-colors">
+                <X className="h-6 w-6" />
+              </button>
+            </div>
+            
+            <div className="p-10 overflow-y-auto flex-grow space-y-10">
+              <div className="flex flex-col md:flex-row md:items-start justify-between gap-8">
+                <div>
+                  <div className="text-4xl font-black text-gray-900 dark:text-white leading-none uppercase tracking-tighter mb-4">{selectedResume.nome}</div>
+                  <div className="flex flex-wrap items-center gap-3 text-[10px] font-black text-gray-500 dark:text-gray-400 uppercase">
+                    <span className="flex items-center gap-1.5 bg-gray-100 dark:bg-gray-800 px-3 py-1.5 rounded-xl border border-gray-200 dark:border-gray-700 tracking-widest"><MapPin className="h-3.5 w-3.5" /> {selectedResume.cidade}</span>
+                    <span className="flex items-center gap-1.5 bg-teal-600 text-white px-3 py-1.5 rounded-xl tracking-widest"><Briefcase className="h-3.5 w-3.5" /> {selectedResume.vaga_interesse}</span>
+                  </div>
+                  <div className="mt-4 text-sm text-gray-600 dark:text-gray-300">
+                    <p><strong>E-mail:</strong> {selectedResume.email}</p>
+                    <p><strong>Telefone:</strong> {selectedResume.telefone}</p>
+                  </div>
+                  {selectedResume.resumo && (
+                    <div className="mt-6 p-5 bg-gray-50 dark:bg-gray-800 rounded-2xl border border-gray-100 dark:border-gray-700">
+                      <h4 className="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-3">Resumo / Apresentação</h4>
+                      <p className="text-sm text-gray-700 dark:text-gray-300 whitespace-pre-wrap leading-relaxed">
+                        {selectedResume.resumo}
+                      </p>
+                    </div>
+                  )}
+                </div>
+                <button 
+                  onClick={() => window.open(selectedResume.curriculo_url, '_blank')}
+                  className="bg-black dark:bg-white text-white dark:text-black px-8 py-4 rounded-2xl font-black uppercase flex items-center justify-center gap-3 transition-all shadow-xl text-sm group active:scale-95"
+                >
+                  <Download className="h-5 w-5 group-hover:translate-y-0.5 transition-transform" /> Ver Currículo
+                </button>
+              </div>
+            </div>
+
+            <div className="p-8 border-t border-gray-100 dark:border-gray-800 bg-gray-50/50 dark:bg-gray-800/50">
+              <button 
+                onClick={() => setSelectedResume(null)}
+                className="w-full bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-700 text-gray-700 dark:text-gray-300 py-4 rounded-2xl font-black uppercase text-sm hover:bg-gray-100 dark:hover:bg-gray-700 transition-all shadow-sm"
+              >
+                Fechar Painel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+/* COMPONENTES DE GRÁFICO PERSONALIZADOS */
+
+const SVGLineChart = ({ data }: { data: {date: string, count: number}[] }) => {
+  if (data.length === 0) return <div className="bg-white dark:bg-gray-900 p-10 rounded-[2.5rem] border border-gray-100 dark:border-gray-800 shadow-xl h-80 flex items-center justify-center text-gray-400 font-bold uppercase">Sem dados</div>;
+  
+  const max = Math.max(...data.map(d => d.count), 1);
+  const w = 600, h = 200, padding = 40;
+  
+  const getPoint = (index: number, count: number) => {
+    const x = padding + (index * ((w - padding * 2) / Math.max(data.length - 1, 1)));
+    const y = h - padding - ((count / max) * (h - padding * 2));
+    return {x, y};
+  };
+
+  const points = data.map((d, i) => getPoint(i, d.count));
+  const pathData = points.length > 1 
+    ? `M ${points.map(p => `${p.x},${p.y}`).join(' L ')}` 
+    : `M ${padding},${h-padding} L ${w-padding},${h-padding}`;
+
+  // Area under line
+  const areaData = `${pathData} L ${points[points.length-1]?.x || w-padding},${h-padding} L ${points[0]?.x || padding},${h-padding} Z`;
+
+  return (
+    <div className="bg-white dark:bg-gray-900 p-8 rounded-[2.5rem] border border-gray-100 dark:border-gray-800 shadow-xl relative overflow-hidden group">
+      <h3 className="font-black text-xs uppercase text-gray-400 dark:text-gray-500 mb-2 tracking-[0.2em] flex items-center gap-3">
+         <TrendingUp className="h-4 w-4" /> Volume de Registros no Tempo
+      </h3>
+      <div className="w-full overflow-x-auto custom-scrollbar pt-8">
+        <svg viewBox={`0 0 ${w} ${h}`} className="w-full h-auto drop-shadow-xl min-w-[500px]">
+          <defs>
+            <linearGradient id="gradientLine" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="#0d9488" stopOpacity="0.4" />
+              <stop offset="100%" stopColor="#0d9488" stopOpacity="0" />
+            </linearGradient>
+          </defs>
+          
+          {/* Grid lines */}
+          <line x1={padding} y1={h-padding} x2={w-padding} y2={h-padding} stroke="#e5e7eb" strokeWidth="2" className="dark:stroke-gray-800" strokeDasharray="5,5" />
+          <line x1={padding} y1={padding} x2={w-padding} y2={padding} stroke="#e5e7eb" strokeWidth="1" className="dark:stroke-gray-800" strokeDasharray="5,5" />
+          
+          {/* Area */}
+          {points.length > 1 && <path d={areaData} fill="url(#gradientLine)" className="animate-in fade-in duration-1000 delay-300" />}
+          
+          {/* Line */}
+          <path d={pathData} fill="none" stroke="#0d9488" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" className="animate-in slide-in-from-left duration-1000" />
+          
+          {/* Points & Labels */}
+          {data.map((d, i) => {
+            const p = getPoint(i, d.count);
+            return (
+              <g key={i} className="hover:opacity-80 cursor-pointer transition-opacity">
+                <circle cx={p.x} cy={p.y} r="6" fill="#fff" stroke="#0d9488" strokeWidth="3" className="animate-in zoom-in duration-700" style={{animationDelay: `${i * 100}ms`}} />
+                <text x={p.x} y={h - 10} fill="#9ca3af" fontSize="10" fontWeight="bold" textAnchor="middle">{d.date}</text>
+                <text x={p.x} y={p.y - 15} fill="#0d9488" fontSize="12" fontWeight="900" textAnchor="middle">{d.count}</text>
+              </g>
+            );
+          })}
+        </svg>
+      </div>
+    </div>
+  );
+};
+
+const HeatmapChart = ({ data, total }: { data: number[], total: number }) => {
+  const max = Math.max(...data, 1);
+  
+  // Agrupa por períodos do dia para ficar mais fácil de ver no design
+  const periods = [
+    { label: 'Madrugada (0h-6h)', hours: data.slice(0, 6) },
+    { label: 'Manhã (6h-12h)', hours: data.slice(6, 12) },
+    { label: 'Tarde (12h-18h)', hours: data.slice(12, 18) },
+    { label: 'Noite (18h-24h)', hours: data.slice(18, 24) }
+  ];
+
+  const getColorOpacity = (val: number) => {
+    if (val === 0) return 'bg-gray-100 dark:bg-gray-800';
+    const intensity = Math.min((val / max) * 100, 100);
+    if (intensity > 75) return 'bg-teal-700';
+    if (intensity > 40) return 'bg-teal-500';
+    return 'bg-teal-300';
+  };
+
+  return (
+    <div className="bg-white dark:bg-gray-900 p-8 rounded-[2.5rem] border border-gray-100 dark:border-gray-800 shadow-xl h-full flex flex-col">
+      <h3 className="font-black text-xs uppercase text-gray-400 dark:text-gray-500 mb-6 tracking-[0.2em] flex items-center gap-3">
+         <BarChart3 className="h-4 w-4" /> Mapa de Calor (Horários)
+      </h3>
+      <div className="flex-grow flex flex-col justify-between space-y-4">
+        {periods.map((p, i) => (
+          <div key={i}>
+            <div className="text-[10px] font-black uppercase tracking-widest text-gray-400 mb-2">{p.label}</div>
+            <div className="flex gap-1">
+              {p.hours.map((val, hIdx) => {
+                const hourNum = (i * 6) + hIdx;
+                return (
+                  <div key={hIdx} className="group relative flex-1">
+                    <div className={`h-8 rounded-md w-full ${getColorOpacity(val)} transition-all hover:scale-110 hover:shadow-lg cursor-pointer`}></div>
+                    <div className="opacity-0 group-hover:opacity-100 absolute bottom-full mb-2 left-1/2 -translate-x-1/2 bg-gray-900 text-white text-[10px] font-bold px-2 py-1 rounded pointer-events-none transition-opacity whitespace-nowrap z-10">
+                      {hourNum}h: {val} registros
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+};
+
+const KPICard = ({ title, value, icon, color }: any) => (
+  <div className="bg-white dark:bg-gray-900 p-8 rounded-[2rem] border border-gray-100 dark:border-gray-800 shadow-xl hover:translate-y-[-5px] transition-all group">
+    <div className={`bg-${color}-100 dark:bg-${color}-900/30 p-3 rounded-2xl w-fit mb-6 group-hover:rotate-12 transition-transform`}>{icon}</div>
+    <div className="text-4xl font-black text-gray-900 dark:text-white mb-1">{value}</div>
+    <div className="text-[10px] font-black text-gray-400 dark:text-gray-500 uppercase tracking-widest leading-none">{title}</div>
+  </div>
+);
+
+const ChartCard = ({ title, data, total }: any) => (
+  <div className="bg-white dark:bg-gray-900 p-10 rounded-[2.5rem] border border-gray-100 dark:border-gray-800 shadow-xl">
+    <h3 className="font-black text-xs uppercase text-gray-400 dark:text-gray-500 mb-8 tracking-[0.2em] flex items-center gap-3">
+       <BarChart3 className="h-4 w-4" /> {title}
+    </h3>
+    <div className="space-y-6">
+      {Object.entries(data).sort((a: any, b: any) => b[1] - a[1]).slice(0, 5).map(([label, count]: any) => (
+        <div key={label} className="group">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-xs font-black text-gray-700 dark:text-gray-300 uppercase">{label}</span>
+            <span className="text-xs font-black text-teal-600">{count}</span>
+          </div>
+          <div className="h-2 bg-gray-100 dark:bg-gray-800 rounded-full overflow-hidden">
+            <div className="h-full bg-teal-600 rounded-full transition-all duration-1000" style={{ width: `${(count / total) * 100}%` }}></div>
+          </div>
+        </div>
+      ))}
+    </div>
+  </div>
+);
+
+const ConfigCard = ({ title, items, onAdd, onDelete, newItem, setNewItem }: any) => (
+  <div className="bg-white dark:bg-gray-900 p-10 rounded-[3rem] border border-gray-100 dark:border-gray-800 shadow-xl flex flex-col h-[500px]">
+    <h3 className="font-black text-xl text-gray-900 dark:text-white uppercase tracking-tighter mb-8">{title}</h3>
+    <div className="flex gap-3 mb-8">
+      <input 
+        type="text" 
+        className="flex-grow px-5 py-4 rounded-2xl border border-gray-200 dark:border-gray-800 dark:bg-gray-800 outline-none focus:ring-4 focus:ring-teal-600/10 focus:border-teal-600 font-bold text-sm"
+        placeholder="Adicionar..."
+        value={newItem}
+        onChange={e => setNewItem(e.target.value)}
+      />
+      <button onClick={onAdd} className="bg-teal-600 text-white p-4 rounded-2xl hover:bg-teal-700 transition-all shadow-lg active:scale-90"><Plus className="h-6 w-6" /></button>
+    </div>
+    <div className="overflow-y-auto flex-grow space-y-3 pr-2 custom-scrollbar">
+      {items.map((item: ConfigItem) => (
+        <div key={item.id} className="flex items-center justify-between p-4 bg-gray-50 dark:bg-gray-800/50 rounded-2xl group transition-all hover:bg-teal-50 dark:hover:bg-teal-900/10">
+          <span className="font-bold text-gray-700 dark:text-gray-300 text-sm uppercase tracking-tight">{item.nome}</span>
+          <button onClick={() => onDelete(item.id)} className="text-gray-300 hover:text-teal-600 p-2 transition-colors"><Trash2 className="h-4 w-4" /></button>
+        </div>
+      ))}
+    </div>
+  </div>
+);
+
+export default AdminDashboard;

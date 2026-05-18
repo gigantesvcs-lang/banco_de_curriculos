@@ -1,0 +1,35 @@
+version: "3.8"
+
+services:
+  rh-frontend:
+    image: banco-de-curriculos:latest
+    container_name: gigante_rh_frontend
+    restart: always
+    networks:
+      - rede_gigante
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == worker # Ou node.role == manager, dependendo do seu cluster
+      labels:
+        - "traefik.enable=true"
+        # Rota HTTP para HTTPS (Redirecionamento automático gerenciado pelo Traefik)
+        - "traefik.http.routers.rh-frontend-http.rule=Host(`rh.gigante.com.br`)"
+        - "traefik.http.routers.rh-frontend-http.entrypoints=web"
+        
+        # Rota HTTPS principal
+        - "traefik.http.routers.rh-frontend.rule=Host(`rh.gigante.com.br`)"
+        - "traefik.http.routers.rh-frontend.entrypoints=websecure"
+        - "traefik.http.routers.rh-frontend.tls=true"
+        - "traefik.http.routers.rh-frontend.tls.certresolver=letsencryptresolver"
+        
+        # Define a porta interna do container (Nginx roda na porta 80)
+        - "traefik.http.services.rh-frontend.loadbalancer.server.port=80"
+        # Garante a resolução de rede correta no Swarm
+        - "traefik.docker.network=rede_gigante"
+
+networks:
+  rede_gigante:
+    external: true
+    name: rede_gigante

@@ -1,0 +1,13 @@
+node_modules
+dist
+.git
+.gitignore
+.agent
+.tempmediaStorage
+C:\\Users\\User\\.gemini\\antigravity
+README.md
+walkthrough.md
+task.md
+implementation_plan.md
+Dockerfile
+nginx.conf
