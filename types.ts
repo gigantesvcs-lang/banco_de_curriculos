@@ -15,7 +15,23 @@ export interface Candidato {
 export interface ConfigItem {
   id: string;
   nome: string;
+  requisitos?: string | null;
   created_at: string;
+}
+
+export interface JobLandingContent {
+  published: boolean;
+  slug: string;
+  title: string;
+  heroImageUrl: string;
+  location: string;
+  workModel: string;
+  shortDescription: string;
+  salary: string;
+  benefits: string[];
+  responsibilities: string[];
+  requirements: string[];
+  agentContext: string;
 }
 
 export interface KPIStats {

@@ -45,14 +45,14 @@ const callOllama = async (prompt: string, model: string = 'llama3.2:3b') => {
 };
 
 // Helper para chamar a API do Gemini
-const callGemini = async (prompt: string, apiKey?: string) => {
+const callGemini = async (prompt: string, apiKey?: string, model: string = 'gemini-2.5-flash') => {
   const finalApiKey = apiKey || import.meta.env.VITE_GEMINI_API_KEY || import.meta.env.GEMINI_API_KEY || '';
   if (!finalApiKey) {
     throw new Error("Chave do Gemini não configurada nas configurações.");
   }
   const ai = new GoogleGenAI({ apiKey: finalApiKey });
   const response = await ai.models.generateContent({
-    model: 'gemini-2.5-flash',
+    model,
     contents: prompt,
     config: {
       temperature: 0.7,
@@ -85,6 +85,7 @@ export const analyzeSurveyResponses = async (
   respostas: any[],
   provider: 'ollama' | 'gemini',
   geminiKey?: string,
+  geminiModel: string = 'gemini-2.5-flash',
   ollamaModel: string = 'llama3.2:3b',
   customPrompt?: string
 ): Promise<AIAnalysisResult> => {
@@ -119,7 +120,7 @@ Gere um relatório estruturado em português contendo estritamente os seguintes 
 
   let responseText = "";
   if (provider === 'gemini') {
-    responseText = await callGemini(prompt, geminiKey);
+    responseText = await callGemini(prompt, geminiKey, geminiModel);
   } else {
     responseText = await callOllama(prompt, ollamaModel);
   }
@@ -142,6 +143,7 @@ export const analyzeTalentCompatibility = async (
   jobName: string,
   provider: 'ollama' | 'gemini',
   geminiKey?: string,
+  geminiModel: string = 'gemini-2.5-flash',
   ollamaModel: string = 'llama3.2:3b',
   customPrompt?: string
 ): Promise<TalentAnalysisResult> => {
@@ -172,12 +174,32 @@ Evite rodeios e seja cirúrgico em sua avaliação técnica e comportamental.`;
 
   let responseText = "";
   if (provider === 'gemini') {
-    responseText = await callGemini(prompt, geminiKey);
+    responseText = await callGemini(prompt, geminiKey, geminiModel);
   } else {
     responseText = await callOllama(prompt, ollamaModel);
   }
 
   return parseTalentResponse(responseText);
+};
+
+export const listAvailableGeminiModels = async (apiKey?: string): Promise<string[]> => {
+  const finalApiKey = apiKey || import.meta.env.VITE_GEMINI_API_KEY || import.meta.env.GEMINI_API_KEY || '';
+  if (!finalApiKey) {
+    return [];
+  }
+
+  const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(finalApiKey)}`);
+  if (!response.ok) {
+    throw new Error('Nao foi possivel consultar os modelos do Gemini para esta chave.');
+  }
+
+  const data = await response.json();
+  const models = Array.isArray(data?.models) ? data.models : [];
+
+  return models
+    .filter((model: any) => Array.isArray(model?.supportedGenerationMethods) && model.supportedGenerationMethods.includes('generateContent'))
+    .map((model: any) => String(model?.name || '').replace(/^models\//, ''))
+    .filter((name: string) => name.toLowerCase().includes('gemini'));
 };
 
 // Funções auxiliares de parsing de texto da IA

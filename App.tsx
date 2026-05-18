@@ -3,6 +3,8 @@ import React, { useState, useEffect } from 'react';
 import { HashRouter as Router, Routes, Route, Link, Navigate } from 'react-router-dom';
 import PublicForm from './components/PublicForm';
 import PublicSurvey from './components/PublicSurvey';
+import PublicJobsBoard from './components/PublicJobsBoard';
+import PublicJobDetails from './components/PublicJobDetails';
 import AdminDashboard from './components/AdminDashboard';
 import Login from './components/Login';
 import { supabase } from './supabase';
@@ -111,10 +113,14 @@ const App: React.FC = () => {
         {/* Content */}
         <main className="flex-grow">
           <Routes>
-            <Route path="/" element={<PublicForm />} />
+            <Route path="/" element={<PublicJobsBoard />} />
+            <Route path="/vagas/:slug" element={<PublicJobDetails />} />
+            <Route path="/candidatar/:slug" element={<PublicForm />} />
+            <Route path="/cadastro" element={<PublicForm />} />
             <Route path="/pesquisa/:id" element={<PublicSurvey />} />
             <Route path="/login" element={user ? <Navigate to="/admin" /> : <Login />} />
             <Route path="/admin" element={user ? <AdminDashboard /> : <Navigate to="/login" />} />
+            <Route path="*" element={<PublicJobsBoard />} />
           </Routes>
         </main>
 

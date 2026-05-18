@@ -1,13 +1,14 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from '../supabase';
-import { Candidato, ConfigItem, KPIStats, Pesquisa, Pergunta, TipoPergunta } from '../types';
+import { Candidato, ConfigItem, JobLandingContent, KPIStats, Pesquisa, Pergunta, TipoPergunta } from '../types';
 import { 
   BarChart3, Users, ClipboardList, Sparkles, Briefcase, Settings,
   Eye, Download, MapPin, X, Loader2, Plus, Trash2, TrendingUp, ShieldCheck, Calendar,
   Link2, Copy, CheckCheck, ChevronLeft, ToggleLeft, ToggleRight, FileText, Hash, AlignLeft, ListChecks, Star,
   Share2, ExternalLink, MessageCircle, Brain, Award, Zap, Check, AlertTriangle, ThumbsUp, ThumbsDown, RefreshCw
 } from 'lucide-react';
-import { analyzeSurveyResponses, analyzeTalentCompatibility, AIAnalysisResult, TalentAnalysisResult, DEFAULT_PROMPT_SURVEYS, DEFAULT_PROMPT_TALENTS } from '../aiService';
+import { analyzeSurveyResponses, analyzeTalentCompatibility, listAvailableGeminiModels, AIAnalysisResult, TalentAnalysisResult, DEFAULT_PROMPT_SURVEYS, DEFAULT_PROMPT_TALENTS } from '../aiService';
+import { createDefaultJobLanding, parseJobLandingFromRequisitos, serializeJobLanding, toLines } from '../jobsService';
 
 const AdminDashboard: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'overview' | 'talents' | 'surveys' | 'ai' | 'jobs' | 'settings'>('overview');
@@ -32,6 +33,12 @@ const AdminDashboard: React.FC = () => {
   const [cidades, setCidades] = useState<ConfigItem[]>([]);
   const [cargos, setCargos] = useState<ConfigItem[]>([]);
   const [newItem, setNewItem] = useState('');
+  const [jobEditorOpen, setJobEditorOpen] = useState(false);
+  const [editingCargoId, setEditingCargoId] = useState<string>('');
+  const [creatingJob, setCreatingJob] = useState(false);
+  const [newJobName, setNewJobName] = useState('');
+  const [jobLanding, setJobLanding] = useState<JobLandingContent>(createDefaultJobLanding(''));
+  const [savingJob, setSavingJob] = useState(false);
 
   // Estado do Módulo de Pesquisas
   const [pesquisas, setPesquisas] = useState<Pesquisa[]>([]);
@@ -51,9 +58,17 @@ const AdminDashboard: React.FC = () => {
 
   // Estado da Análise com Inteligência Artificial
   const [geminiKey, setGeminiKey] = useState(() => localStorage.getItem('gigante_gemini_key') || '');
+  const [tempGeminiKey, setTempGeminiKey] = useState(() => localStorage.getItem('gigante_gemini_key') || '');
   const [geminiSaveStatus, setGeminiSaveStatus] = useState<'idle' | 'saved'>('idle');
-  const [aiProvider, setAiProvider] = useState<'ollama' | 'gemini'>('ollama');
-  const [ollamaModel, setOllamaModel] = useState<string>('llama3.2:3b');
+  const [aiProvider, setAiProvider] = useState<'ollama' | 'gemini'>(() => {
+    const savedProvider = localStorage.getItem('gigante_ai_provider');
+    return savedProvider === 'gemini' ? 'gemini' : 'ollama';
+  });
+  const [ollamaModel, setOllamaModel] = useState<string>(() => localStorage.getItem('gigante_ollama_model') || 'llama3.2:3b');
+  const [geminiModel, setGeminiModel] = useState<string>(() => localStorage.getItem('gigante_gemini_model') || 'gemini-2.5-flash');
+  const [geminiModels, setGeminiModels] = useState<string[]>([]);
+  const [loadingGeminiModels, setLoadingGeminiModels] = useState<boolean>(false);
+  const [geminiModelsError, setGeminiModelsError] = useState<string>('');
   const [selectedAiSurveyId, setSelectedAiSurveyId] = useState<string>('');
   const [analyzingSurvey, setAnalyzingSurvey] = useState<boolean>(false);
   const [surveyAnalysisResult, setSurveyAnalysisResult] = useState<AIAnalysisResult | null>(null);
@@ -74,6 +89,51 @@ const AdminDashboard: React.FC = () => {
     fetchData();
     fetchPesquisas();
   }, [filterCity, filterCargo, startDate, endDate]);
+
+  useEffect(() => {
+    localStorage.setItem('gigante_ai_provider', aiProvider);
+  }, [aiProvider]);
+
+  useEffect(() => {
+    localStorage.setItem('gigante_ollama_model', ollamaModel);
+  }, [ollamaModel]);
+
+  useEffect(() => {
+    localStorage.setItem('gigante_gemini_model', geminiModel);
+  }, [geminiModel]);
+
+  useEffect(() => {
+    if (aiProvider !== 'gemini' || !geminiKey) {
+      setGeminiModels([]);
+      setGeminiModelsError('');
+      return;
+    }
+
+    let cancelled = false;
+    const loadGeminiModels = async () => {
+      setLoadingGeminiModels(true);
+      setGeminiModelsError('');
+      try {
+        const models = await listAvailableGeminiModels(geminiKey);
+        if (cancelled) return;
+        setGeminiModels(models);
+        if (models.length > 0 && !models.includes(geminiModel)) {
+          setGeminiModel(models[0]);
+        }
+      } catch (error: any) {
+        if (cancelled) return;
+        setGeminiModels([]);
+        setGeminiModelsError(error?.message || 'Falha ao carregar modelos do Gemini.');
+      } finally {
+        if (!cancelled) setLoadingGeminiModels(false);
+      }
+    };
+
+    loadGeminiModels();
+    return () => {
+      cancelled = true;
+    };
+  }, [aiProvider, geminiKey]);
 
   const fetchData = async () => {
     setLoading(true);
@@ -152,6 +212,77 @@ const AdminDashboard: React.FC = () => {
   const handleDeleteItem = async (table: 'cidades' | 'cargos', id: string) => {
     const { error } = await supabase.from(table).delete().eq('id', id);
     if (!error) fetchData();
+  };
+
+  const openJobEditor = (cargo: ConfigItem) => {
+    setCreatingJob(false);
+    setNewJobName(cargo.nome);
+    setEditingCargoId(cargo.id);
+    setJobLanding(parseJobLandingFromRequisitos(cargo));
+    setJobEditorOpen(true);
+  };
+
+  const openCreateJobModal = () => {
+    const baseName = 'Analista Comercial';
+    const template = createDefaultJobLanding(baseName);
+    setCreatingJob(true);
+    setEditingCargoId('');
+    setNewJobName(baseName);
+    setJobLanding({
+      ...template,
+      title: 'Analista Comercial - Equipamentos Medicos',
+      location: 'Ribeirao Preto - SP',
+      workModel: 'Presencial',
+      shortDescription: 'Atue no relacionamento com clientes do setor da saude, apoiando projetos e propostas comerciais com foco em impacto real.',
+      salary: 'Faixa a combinar + variavel',
+      benefits: ['Vale alimentacao', 'Plano de saude', 'Vale transporte', 'Seguro de vida'],
+      responsibilities: ['Atender carteira de clientes e novos leads', 'Apoiar propostas tecnicas e comerciais', 'Atuar em rotinas de CRM e follow-up'],
+      requirements: ['Experiencia com vendas consultivas', 'Boa comunicacao e organizacao', 'Desejavel experiencia no segmento de saude'],
+      agentContext: 'Priorizar candidatos com perfil consultivo, capacidade de comunicacao e historico de estabilidade profissional. Descartar candidatos sem aderencia ao atendimento B2B.'
+    });
+    setJobEditorOpen(true);
+  };
+
+  const handleSaveJobLanding = async () => {
+    if (creatingJob && !newJobName.trim()) {
+      alert('Informe o nome base da vaga.');
+      return;
+    }
+
+    setSavingJob(true);
+    const payload: JobLandingContent = {
+      ...jobLanding,
+      benefits: jobLanding.benefits.filter(Boolean),
+      responsibilities: jobLanding.responsibilities.filter(Boolean),
+      requirements: jobLanding.requirements.filter(Boolean)
+    };
+
+    const serialized = serializeJobLanding(payload);
+    let error: any = null;
+
+    if (creatingJob) {
+      const insertRes = await supabase
+        .from('cargos')
+        .insert([{ nome: newJobName.trim(), requisitos: serialized }]);
+      error = insertRes.error;
+    } else {
+      const updateRes = await supabase
+        .from('cargos')
+        .update({ nome: newJobName.trim() || payload.title, requisitos: serialized })
+        .eq('id', editingCargoId);
+      error = updateRes.error;
+    }
+
+    setSavingJob(false);
+    if (error) {
+      alert('Nao foi possivel salvar a vaga.');
+      return;
+    }
+    setJobEditorOpen(false);
+    setEditingCargoId('');
+    setCreatingJob(false);
+    setNewJobName('');
+    fetchData();
   };
 
   // === FUNÇÕES DO MÓDULO DE PESQUISAS ===
@@ -331,6 +462,7 @@ const AdminDashboard: React.FC = () => {
         resData,
         aiProvider,
         geminiKey,
+        geminiModel,
         ollamaModel,
         promptSurveys
       );
@@ -347,13 +479,20 @@ const AdminDashboard: React.FC = () => {
   const handleAnalyzeTalent = async (candidate: Candidato) => {
     setAnalyzingTalentId(candidate.id);
     try {
+      const cargoContext = cargos.find(c => c.nome === (selectedAiCargo || candidate.vaga_interesse));
+      const landing = cargoContext ? parseJobLandingFromRequisitos(cargoContext) : null;
+      const enrichedPrompt = landing?.agentContext
+        ? `${promptTalents}\n\nContexto adicional da vaga:\n${landing.agentContext}`
+        : promptTalents;
+
       const analysis = await analyzeTalentCompatibility(
         candidate,
         selectedAiCargo || candidate.vaga_interesse,
         aiProvider,
         geminiKey,
+        geminiModel,
         ollamaModel,
-        promptTalents
+        enrichedPrompt
       );
       setTalentAnalysisResults(prev => ({
         ...prev,
@@ -378,8 +517,13 @@ const AdminDashboard: React.FC = () => {
   };
 
   const handleSaveGeminiKey = (key: string) => {
-    setGeminiKey(key);
-    localStorage.setItem('gigante_gemini_key', key);
+    const normalizedKey = key.trim();
+    setGeminiKey(normalizedKey);
+    setTempGeminiKey(normalizedKey);
+    localStorage.setItem('gigante_gemini_key', normalizedKey);
+    if (normalizedKey) {
+      setAiProvider('gemini');
+    }
     setGeminiSaveStatus('saved');
     setTimeout(() => setGeminiSaveStatus('idle'), 2500);
   };
@@ -978,9 +1122,30 @@ const AdminDashboard: React.FC = () => {
                     </select>
                   )}
 
+                  {aiProvider === 'gemini' && geminiKey && (
+                    <select
+                      value={geminiModel}
+                      onChange={(e) => setGeminiModel(e.target.value)}
+                      disabled={loadingGeminiModels || geminiModels.length === 0}
+                      className="px-4 py-2 rounded-2xl border border-gray-200 dark:border-gray-700 dark:bg-gray-800 text-xs font-black uppercase outline-none focus:border-teal-600 w-full sm:w-auto cursor-pointer disabled:opacity-60"
+                    >
+                      {loadingGeminiModels && <option value={geminiModel}>Carregando modelos...</option>}
+                      {!loadingGeminiModels && geminiModels.length === 0 && <option value={geminiModel}>{geminiModel}</option>}
+                      {!loadingGeminiModels && geminiModels.length > 0 && geminiModels.map((model) => (
+                        <option key={model} value={model}>{model}</option>
+                      ))}
+                    </select>
+                  )}
+
                   {aiProvider === 'gemini' && !geminiKey && (
                     <div className="text-red-500 text-xs font-black uppercase flex items-center gap-1.5 px-3 py-2 bg-red-50 dark:bg-red-950/20 rounded-2xl border border-red-100 dark:border-red-900/30">
                       <AlertTriangle className="h-4 w-4 animate-pulse" /> Cadastre sua chave nas Configurações!
+                    </div>
+                  )}
+
+                  {aiProvider === 'gemini' && geminiKey && geminiModelsError && (
+                    <div className="text-amber-600 text-xs font-black uppercase flex items-center gap-1.5 px-3 py-2 bg-amber-50 dark:bg-amber-950/20 rounded-2xl border border-amber-100 dark:border-amber-900/30">
+                      <AlertTriangle className="h-4 w-4" /> {geminiModelsError}
                     </div>
                   )}
                 </div>
@@ -1373,16 +1538,123 @@ const AdminDashboard: React.FC = () => {
 
           {/* Aba: MURAL DE VAGAS */}
           {activeTab === 'jobs' && (
-            <div className="flex flex-col items-center justify-center py-24 text-center animate-in zoom-in-95 duration-500">
-              <div className="bg-teal-50 dark:bg-teal-900/20 p-6 rounded-full mb-6">
-                <Briefcase className="h-16 w-16 text-teal-600" />
+            <div className="space-y-8 animate-in fade-in duration-500">
+              <div className="bg-white dark:bg-gray-900 rounded-[2.5rem] p-8 border border-gray-100 dark:border-gray-800 shadow-xl flex flex-col md:flex-row md:items-center md:justify-between gap-6">
+                <div>
+                  <h3 className="text-2xl font-black text-gray-900 dark:text-white uppercase tracking-tighter">Mural de Vagas</h3>
+                  <p className="text-gray-600 dark:text-gray-300 text-sm font-medium mt-1">Cada vaga vira uma LP padrao no estilo Gigante, com "saiba mais" e "candidate-se".</p>
+                </div>
+                <div className="flex flex-wrap gap-3">
+                  <button onClick={openCreateJobModal} className="inline-flex items-center gap-2 bg-teal-600 hover:bg-teal-700 text-white px-4 py-2 rounded-xl text-xs font-black uppercase">
+                    <Plus className="h-4 w-4" /> Criar nova vaga
+                  </button>
+                  <a href="#/" target="_blank" rel="noreferrer" className="inline-flex items-center gap-2 bg-teal-50 dark:bg-teal-900/20 text-teal-700 dark:text-teal-300 px-4 py-2 rounded-xl text-xs font-black uppercase">
+                    <ExternalLink className="h-4 w-4" /> Ver portal publico
+                  </a>
+                </div>
               </div>
-              <h3 className="text-2xl font-black text-gray-900 dark:text-white uppercase tracking-tighter mb-3">
-                Mural de Vagas e Landing Pages
-              </h3>
-              <p className="text-gray-500 max-w-md font-medium">
-                Este módulo está na pauta da próxima fase. Em breve você poderá criar páginas dinâmicas para captação de talentos de cada cargo!
-              </p>
+
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                {cargos.map((cargo) => {
+                  const landing = parseJobLandingFromRequisitos(cargo);
+                  return (
+                    <div key={cargo.id} className="bg-white dark:bg-gray-900 rounded-3xl p-6 border border-gray-100 dark:border-gray-800 shadow-lg space-y-4">
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <h4 className="text-lg font-black text-gray-900 dark:text-white uppercase tracking-tight">{landing.title}</h4>
+                          <p className="text-xs text-gray-500 dark:text-gray-400 font-bold uppercase">Cargo base: {cargo.nome}</p>
+                        </div>
+                        <span className={`px-3 py-1 rounded-full text-[10px] font-black uppercase ${landing.published ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300' : 'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300'}`}>
+                          {landing.published ? 'Publicada' : 'Rascunho'}
+                        </span>
+                      </div>
+                      <p className="text-sm text-gray-600 dark:text-gray-300 line-clamp-2">{landing.shortDescription}</p>
+                      <div className="flex gap-2">
+                        <button onClick={() => openJobEditor(cargo)} className="bg-teal-600 hover:bg-teal-700 text-white px-4 py-2 rounded-xl text-xs font-black uppercase">Criar/Editar LP</button>
+                        {landing.published && (
+                          <a href={`#/vagas/${landing.slug}`} target="_blank" rel="noreferrer" className="bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-200 px-4 py-2 rounded-xl text-xs font-black uppercase">Saiba mais</a>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              {jobEditorOpen && (
+                <div className="fixed inset-0 z-[70] bg-black/70 backdrop-blur-sm p-4 flex items-center justify-center">
+                  <div className="w-full max-w-4xl max-h-[92vh] overflow-y-auto bg-white dark:bg-gray-900 rounded-[2rem] p-8 border border-gray-100 dark:border-gray-800 space-y-6">
+                    <div className="flex items-center justify-between">
+                      <h4 className="text-xl font-black text-gray-900 dark:text-white uppercase tracking-tight">{creatingJob ? 'Criar nova vaga' : 'Editar vaga'}</h4>
+                      <button onClick={() => setJobEditorOpen(false)} className="p-2 rounded-full hover:bg-gray-100 dark:hover:bg-gray-800"><X className="h-5 w-5" /></button>
+                    </div>
+
+                    <div className="bg-teal-50 dark:bg-teal-900/20 border border-teal-100 dark:border-teal-900/40 rounded-2xl p-4 text-xs font-semibold text-teal-800 dark:text-teal-200">
+                      Preencha este formulario como uma pagina de evento: titulo forte, descricao curta, conteudo objetivo e CTA para candidatura.
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div className="md:col-span-2 space-y-1.5">
+                        <label className="text-[10px] font-black uppercase tracking-widest text-gray-500 dark:text-gray-300">Nome Interno da Vaga</label>
+                        <input value={newJobName} onChange={(e) => setNewJobName(e.target.value)} className="w-full px-4 py-3 rounded-xl border border-gray-200 dark:border-gray-700 dark:bg-gray-800" placeholder="Ex: Analista Comercial" />
+                      </div>
+                      <div className="space-y-1.5">
+                        <label className="text-[10px] font-black uppercase tracking-widest text-gray-500 dark:text-gray-300">Titulo da LP</label>
+                        <input value={jobLanding.title} onChange={(e) => setJobLanding(prev => ({ ...prev, title: e.target.value }))} className="w-full px-4 py-3 rounded-xl border border-gray-200 dark:border-gray-700 dark:bg-gray-800" placeholder="Titulo da vaga" />
+                      </div>
+                      <div className="space-y-1.5">
+                        <label className="text-[10px] font-black uppercase tracking-widest text-gray-500 dark:text-gray-300">Imagem Hero (URL)</label>
+                        <input value={jobLanding.heroImageUrl} onChange={(e) => setJobLanding(prev => ({ ...prev, heroImageUrl: e.target.value }))} className="w-full px-4 py-3 rounded-xl border border-gray-200 dark:border-gray-700 dark:bg-gray-800" placeholder="Ex: /vagas/hero-analista.jpg" />
+                      </div>
+                      <div className="space-y-1.5">
+                        <label className="text-[10px] font-black uppercase tracking-widest text-gray-500 dark:text-gray-300">Slug da URL</label>
+                        <input value={jobLanding.slug} onChange={(e) => setJobLanding(prev => ({ ...prev, slug: e.target.value }))} className="w-full px-4 py-3 rounded-xl border border-gray-200 dark:border-gray-700 dark:bg-gray-800" placeholder="analista-comercial" />
+                      </div>
+                      <div className="space-y-1.5">
+                        <label className="text-[10px] font-black uppercase tracking-widest text-gray-500 dark:text-gray-300">Local</label>
+                        <input value={jobLanding.location} onChange={(e) => setJobLanding(prev => ({ ...prev, location: e.target.value }))} className="w-full px-4 py-3 rounded-xl border border-gray-200 dark:border-gray-700 dark:bg-gray-800" placeholder="Cidade - UF" />
+                      </div>
+                      <div className="space-y-1.5">
+                        <label className="text-[10px] font-black uppercase tracking-widest text-gray-500 dark:text-gray-300">Modelo de Trabalho</label>
+                        <input value={jobLanding.workModel} onChange={(e) => setJobLanding(prev => ({ ...prev, workModel: e.target.value }))} className="w-full px-4 py-3 rounded-xl border border-gray-200 dark:border-gray-700 dark:bg-gray-800" placeholder="Presencial, Hibrido ou Remoto" />
+                      </div>
+                      <div className="md:col-span-2 space-y-1.5">
+                        <label className="text-[10px] font-black uppercase tracking-widest text-gray-500 dark:text-gray-300">Faixa Salarial</label>
+                        <input value={jobLanding.salary} onChange={(e) => setJobLanding(prev => ({ ...prev, salary: e.target.value }))} className="w-full px-4 py-3 rounded-xl border border-gray-200 dark:border-gray-700 dark:bg-gray-800" placeholder="Ex: R$ 4.000 a R$ 5.500 + variavel" />
+                      </div>
+                    </div>
+
+                    <div className="space-y-1.5">
+                      <label className="text-[10px] font-black uppercase tracking-widest text-gray-500 dark:text-gray-300">Descricao Curta da Vaga</label>
+                      <textarea rows={3} value={jobLanding.shortDescription} onChange={(e) => setJobLanding(prev => ({ ...prev, shortDescription: e.target.value }))} className="w-full px-4 py-3 rounded-xl border border-gray-200 dark:border-gray-700 dark:bg-gray-800" placeholder="Descricao curta para o card e topo da LP" />
+                    </div>
+                    <div className="space-y-1.5">
+                      <label className="text-[10px] font-black uppercase tracking-widest text-gray-500 dark:text-gray-300">Responsabilidades</label>
+                      <textarea rows={4} value={jobLanding.responsibilities.join('\n')} onChange={(e) => setJobLanding(prev => ({ ...prev, responsibilities: toLines(e.target.value) }))} className="w-full px-4 py-3 rounded-xl border border-gray-200 dark:border-gray-700 dark:bg-gray-800" placeholder="Uma responsabilidade por linha" />
+                    </div>
+                    <div className="space-y-1.5">
+                      <label className="text-[10px] font-black uppercase tracking-widest text-gray-500 dark:text-gray-300">Requisitos</label>
+                      <textarea rows={4} value={jobLanding.requirements.join('\n')} onChange={(e) => setJobLanding(prev => ({ ...prev, requirements: toLines(e.target.value) }))} className="w-full px-4 py-3 rounded-xl border border-gray-200 dark:border-gray-700 dark:bg-gray-800" placeholder="Um requisito por linha" />
+                    </div>
+                    <div className="space-y-1.5">
+                      <label className="text-[10px] font-black uppercase tracking-widest text-gray-500 dark:text-gray-300">Beneficios</label>
+                      <textarea rows={3} value={jobLanding.benefits.join('\n')} onChange={(e) => setJobLanding(prev => ({ ...prev, benefits: toLines(e.target.value) }))} className="w-full px-4 py-3 rounded-xl border border-gray-200 dark:border-gray-700 dark:bg-gray-800" placeholder="Um beneficio por linha" />
+                    </div>
+                    <div className="space-y-1.5">
+                      <label className="text-[10px] font-black uppercase tracking-widest text-gray-500 dark:text-gray-300">Contexto para IA da Vaga</label>
+                      <textarea rows={4} value={jobLanding.agentContext} onChange={(e) => setJobLanding(prev => ({ ...prev, agentContext: e.target.value }))} className="w-full px-4 py-3 rounded-xl border border-gray-200 dark:border-gray-700 dark:bg-gray-800" placeholder="Criterios de descarte, competencias obrigatorias, perfil ideal etc." />
+                    </div>
+
+                    <label className="inline-flex items-center gap-2 text-sm font-bold text-gray-700 dark:text-gray-200">
+                      <input type="checkbox" checked={jobLanding.published} onChange={(e) => setJobLanding(prev => ({ ...prev, published: e.target.checked }))} /> Publicar esta vaga no portal
+                    </label>
+
+                    <div className="flex justify-end gap-3">
+                      <button onClick={() => setJobEditorOpen(false)} className="px-4 py-2 rounded-xl bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-200 text-xs font-black uppercase">Cancelar</button>
+                      <button onClick={handleSaveJobLanding} disabled={savingJob} className="px-5 py-2 rounded-xl bg-teal-600 text-white text-xs font-black uppercase disabled:opacity-60">{savingJob ? 'Salvando...' : 'Salvar Vaga'}</button>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
@@ -1399,7 +1671,7 @@ const AdminDashboard: React.FC = () => {
                      <h3 className="font-black text-xl text-gray-900 dark:text-white uppercase tracking-tighter flex items-center gap-2">
                        <Sparkles className="text-teal-600 h-6 w-6"/> API Keys e Motores de IA
                      </h3>
-                     <p className="text-sm text-gray-500">Configure o endereço da sua VPS (Ollama) ou chaves do Gemini para habilitar a aba de Análise.</p>
+                     <p className="text-sm text-gray-600 dark:text-gray-300">Configure o endereço da sua VPS (Ollama) ou chaves do Gemini para habilitar a aba de Análise.</p>
                    </div>
                    {geminiSaveStatus === 'saved' && (
                      <div className="bg-green-50 dark:bg-green-950/20 text-green-600 dark:text-green-400 px-4 py-2 rounded-2xl text-xs font-black uppercase flex items-center gap-1.5 self-start sm:self-center shadow-sm animate-in zoom-in-95">
@@ -1410,23 +1682,31 @@ const AdminDashboard: React.FC = () => {
 
                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                     <div className="space-y-2">
-                      <label className="text-xs font-black uppercase text-gray-500">URL do Ollama (VPS)</label>
-                      <input type="text" disabled defaultValue="http://128.140.120.73:11434" className="w-full px-5 py-3 rounded-2xl bg-gray-50 dark:bg-gray-850 border border-gray-250 dark:border-gray-800 text-gray-500 opacity-75" />
+                      <label className="text-xs font-black uppercase text-gray-500 dark:text-gray-300">URL do Ollama (VPS)</label>
+                      <input type="text" disabled defaultValue="http://128.140.120.73:11434" className="w-full px-5 py-3 rounded-2xl bg-gray-100 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-200 opacity-90" />
                     </div>
                     <div className="space-y-2">
                       <div className="flex justify-between items-center">
-                        <label className="text-xs font-black uppercase text-gray-500">Gemini API Key</label>
+                        <label className="text-xs font-black uppercase text-gray-500 dark:text-gray-300">Gemini API Key</label>
                         {geminiKey && (
                           <span className="text-[10px] bg-teal-50 dark:bg-teal-900/30 text-teal-600 px-2 py-0.5 rounded-md font-bold uppercase">Ativa</span>
                         )}
                       </div>
-                      <input 
-                        type="password" 
-                        value={geminiKey} 
-                        onChange={(e) => handleSaveGeminiKey(e.target.value)} 
-                        placeholder="Insira sua chave Gemini API (AIzaSy...)" 
-                        className="w-full px-5 py-3 rounded-2xl bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 outline-none focus:border-teal-600 font-bold focus:ring-4 focus:ring-teal-600/5 transition-all text-xs" 
-                      />
+                      <div className="flex gap-2">
+                        <input 
+                          type="password" 
+                          value={tempGeminiKey} 
+                          onChange={(e) => setTempGeminiKey(e.target.value)} 
+                          placeholder="Insira sua chave Gemini API (AIzaSy...)" 
+                           className="flex-1 px-5 py-3 rounded-2xl bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-600 outline-none focus:border-teal-600 font-bold text-gray-800 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500 focus:ring-4 focus:ring-teal-600/10 transition-all text-xs" 
+                        />
+                        <button
+                          onClick={() => handleSaveGeminiKey(tempGeminiKey)}
+                          className="bg-teal-600 hover:bg-teal-700 text-white px-6 py-3 rounded-2xl font-black uppercase text-xs transition-all shadow-md active:scale-95 flex items-center gap-1.5 shrink-0"
+                        >
+                          <Check className="h-4 w-4" /> Salvar
+                        </button>
+                      </div>
                     </div>
                  </div>
               </div>
@@ -1438,7 +1718,7 @@ const AdminDashboard: React.FC = () => {
                      <h3 className="font-black text-xl text-gray-900 dark:text-white uppercase tracking-tighter flex items-center gap-2">
                        <Brain className="text-teal-600 h-6 w-6"/> Treinamento & Instruções dos Agentes (Copilot)
                      </h3>
-                     <p className="text-sm text-gray-500">Customize o prompt de sistema e as regras de avaliação de cada agente cognitivo de forma independente.</p>
+                     <p className="text-sm text-gray-600 dark:text-gray-300">Customize o prompt de sistema e as regras de avaliação de cada agente cognitivo de forma independente.</p>
                    </div>
                    
                    <div className="flex items-center gap-3">
@@ -1467,7 +1747,7 @@ const AdminDashboard: React.FC = () => {
 
                  <div className="grid grid-cols-1 xl:grid-cols-2 gap-8 pt-2">
                     {/* Agente 1: Analista de Clima (Pesquisas) */}
-                    <div className="space-y-3 bg-gray-50/50 dark:bg-gray-850 p-6 rounded-[2rem] border border-gray-100 dark:border-gray-800 flex flex-col justify-between">
+                    <div className="space-y-3 bg-gray-50/80 dark:bg-gray-800/90 p-6 rounded-[2rem] border border-gray-100 dark:border-gray-700 flex flex-col justify-between">
                       <div className="space-y-2">
                         <div className="flex items-center gap-2 border-b border-gray-100 dark:border-gray-800 pb-2">
                           <div className="bg-teal-50 dark:bg-teal-900/30 text-teal-600 dark:text-teal-400 p-2 rounded-xl">
@@ -1475,10 +1755,10 @@ const AdminDashboard: React.FC = () => {
                           </div>
                           <div>
                             <h4 className="font-black text-sm text-gray-900 dark:text-white uppercase tracking-tight">Agente Analista de Clima</h4>
-                            <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest">Análise de Pesquisas Internas</p>
+                            <p className="text-[10px] font-black text-gray-400 dark:text-gray-300 uppercase tracking-widest">Análise de Pesquisas Internas</p>
                           </div>
                         </div>
-                        <p className="text-xs text-gray-500 leading-relaxed font-medium">
+                        <p className="text-xs text-gray-600 dark:text-gray-300 leading-relaxed font-medium">
                           Este agente processa os volumes de respostas de colaboradores. Edite abaixo as instruções de foco (ex: orientar tom, priorizar críticas construtivas, buscar palavras-chave):
                         </p>
                         <textarea
@@ -1486,7 +1766,7 @@ const AdminDashboard: React.FC = () => {
                           value={promptSurveys}
                           onChange={(e) => setPromptSurveys(e.target.value)}
                           placeholder="Digite as diretrizes do agente analista de clima..."
-                          className="w-full px-4 py-3 text-xs rounded-xl bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 outline-none focus:border-teal-600 font-semibold focus:ring-4 focus:ring-teal-600/5 transition-all resize-none leading-relaxed"
+                          className="w-full px-4 py-3 text-xs rounded-xl bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-600 outline-none focus:border-teal-600 text-gray-800 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500 font-semibold focus:ring-4 focus:ring-teal-600/10 transition-all resize-none leading-relaxed"
                         />
                       </div>
                       <div className="pt-2 text-[10px] font-black text-teal-600 uppercase tracking-wider flex items-center gap-1.5">
@@ -1495,7 +1775,7 @@ const AdminDashboard: React.FC = () => {
                     </div>
 
                     {/* Agente 2: Recrutador Cognitivo (Triagem) */}
-                    <div className="space-y-3 bg-gray-50/50 dark:bg-gray-850 p-6 rounded-[2rem] border border-gray-100 dark:border-gray-800 flex flex-col justify-between">
+                    <div className="space-y-3 bg-gray-50/80 dark:bg-gray-800/90 p-6 rounded-[2rem] border border-gray-100 dark:border-gray-700 flex flex-col justify-between">
                       <div className="space-y-2">
                         <div className="flex items-center gap-2 border-b border-gray-100 dark:border-gray-800 pb-2">
                           <div className="bg-teal-50 dark:bg-teal-900/30 text-teal-600 dark:text-teal-400 p-2 rounded-xl">
@@ -1503,10 +1783,10 @@ const AdminDashboard: React.FC = () => {
                           </div>
                           <div>
                             <h4 className="font-black text-sm text-gray-900 dark:text-white uppercase tracking-tight">Agente Recrutador Cognitivo</h4>
-                            <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest">Triagem de Currículos</p>
+                            <p className="text-[10px] font-black text-gray-400 dark:text-gray-300 uppercase tracking-widest">Triagem de Currículos</p>
                           </div>
                         </div>
-                        <p className="text-xs text-gray-500 leading-relaxed font-medium">
+                        <p className="text-xs text-gray-600 dark:text-gray-300 leading-relaxed font-medium">
                           Este agente avalia a compatibilidade de um candidato com o cargo de interesse. Edite o perfil ideal, a cultura da empresa ou o rigor técnico:
                         </p>
                         <textarea
@@ -1514,7 +1794,7 @@ const AdminDashboard: React.FC = () => {
                           value={promptTalents}
                           onChange={(e) => setPromptTalents(e.target.value)}
                           placeholder="Digite as diretrizes de triagem técnica e cultural..."
-                          className="w-full px-4 py-3 text-xs rounded-xl bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 outline-none focus:border-teal-600 font-semibold focus:ring-4 focus:ring-teal-600/5 transition-all resize-none leading-relaxed"
+                          className="w-full px-4 py-3 text-xs rounded-xl bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-600 outline-none focus:border-teal-600 text-gray-800 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500 font-semibold focus:ring-4 focus:ring-teal-600/10 transition-all resize-none leading-relaxed"
                         />
                       </div>
                       <div className="pt-2 text-[10px] font-black text-teal-600 uppercase tracking-wider flex items-center gap-1.5">

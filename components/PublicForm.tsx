@@ -1,10 +1,13 @@
 import React, { useState, useEffect } from 'react';
+import { useParams } from 'react-router-dom';
 import { supabase } from '../supabase';
 import { uploadCurriculo } from '../minioService';
 import { Upload, CheckCircle2, AlertCircle, Loader2, Briefcase, MapPin, Mail, Phone, HeartPulse } from 'lucide-react';
 import { ConfigItem } from '../types';
+import { parseJobLandingFromRequisitos } from '../jobsService';
 
 const PublicForm: React.FC = () => {
+  const { slug } = useParams<{ slug: string }>();
   const [formData, setFormData] = useState({
     nome: '',
     email: '',
@@ -30,13 +33,23 @@ const PublicForm: React.FC = () => {
         const { data: cData } = await supabase.from('cidades').select('*').order('nome');
         const { data: jData } = await supabase.from('cargos').select('*').order('nome');
         if (cData) setCidades(cData);
-        if (jData) setCargos(jData);
+        if (jData) {
+          setCargos(jData);
+          if (slug) {
+            const matched = (jData as ConfigItem[])
+              .map(c => ({ c, landing: parseJobLandingFromRequisitos(c) }))
+              .find(item => item.landing.slug === slug);
+            if (matched) {
+              setFormData(prev => ({ ...prev, vaga_interesse: matched.c.nome }));
+            }
+          }
+        }
       } catch(e) {
         // Ignora erro se tabelas não existirem
       }
     };
     loadOptions();
-  }, []);
+  }, [slug]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -202,6 +215,7 @@ const PublicForm: React.FC = () => {
               placeholder="Qual vaga você busca?"
               value={formData.vaga_interesse}
               onChange={e => setFormData({...formData, vaga_interesse: e.target.value})}
+              readOnly={!!slug}
             />
           </div>
         </div>
