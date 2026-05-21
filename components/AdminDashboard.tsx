@@ -39,6 +39,8 @@ const AdminDashboard: React.FC = () => {
   const [newJobName, setNewJobName] = useState('');
   const [jobLanding, setJobLanding] = useState<JobLandingContent>(createDefaultJobLanding(''));
   const [savingJob, setSavingJob] = useState(false);
+  const [deletingJobId, setDeletingJobId] = useState<string | null>(null);
+  const [confirmDeleteJobId, setConfirmDeleteJobId] = useState<string | null>(null);
 
   // Estado do Módulo de Pesquisas
   const [pesquisas, setPesquisas] = useState<Pesquisa[]>([]);
@@ -282,6 +284,18 @@ const AdminDashboard: React.FC = () => {
     setEditingCargoId('');
     setCreatingJob(false);
     setNewJobName('');
+    fetchData();
+  };
+
+  const handleDeleteJob = async (cargoId: string) => {
+    setDeletingJobId(cargoId);
+    const { error } = await supabase.from('cargos').delete().eq('id', cargoId);
+    setDeletingJobId(null);
+    setConfirmDeleteJobId(null);
+    if (error) {
+      alert('Não foi possível excluir a vaga.');
+      return;
+    }
     fetchData();
   };
 
@@ -1569,11 +1583,39 @@ const AdminDashboard: React.FC = () => {
                         </span>
                       </div>
                       <p className="text-sm text-gray-600 dark:text-gray-300 line-clamp-2">{landing.shortDescription}</p>
-                      <div className="flex gap-2">
+                      <div className="flex items-center gap-2">
                         <button onClick={() => openJobEditor(cargo)} className="bg-teal-600 hover:bg-teal-700 text-white px-4 py-2 rounded-xl text-xs font-black uppercase">Criar/Editar LP</button>
                         {landing.published && (
                           <a href={`#/vagas/${landing.slug}`} target="_blank" rel="noreferrer" className="bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-200 px-4 py-2 rounded-xl text-xs font-black uppercase">Saiba mais</a>
                         )}
+                        <div className="ml-auto">
+                          {confirmDeleteJobId === cargo.id ? (
+                            <div className="flex items-center gap-2 animate-in fade-in duration-200">
+                              <span className="text-[10px] font-black uppercase text-red-600 dark:text-red-400">Excluir?</span>
+                              <button
+                                onClick={() => handleDeleteJob(cargo.id)}
+                                disabled={deletingJobId === cargo.id}
+                                className="bg-red-600 hover:bg-red-700 text-white px-3 py-1.5 rounded-lg text-[10px] font-black uppercase disabled:opacity-60 transition-all"
+                              >
+                                {deletingJobId === cargo.id ? 'Excluindo...' : 'Confirmar'}
+                              </button>
+                              <button
+                                onClick={() => setConfirmDeleteJobId(null)}
+                                className="bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-300 px-3 py-1.5 rounded-lg text-[10px] font-black uppercase transition-all"
+                              >
+                                Não
+                              </button>
+                            </div>
+                          ) : (
+                            <button
+                              onClick={() => setConfirmDeleteJobId(cargo.id)}
+                              className="p-2 rounded-xl text-gray-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/20 transition-all"
+                              title="Excluir vaga"
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </button>
+                          )}
+                        </div>
                       </div>
                     </div>
                   );
